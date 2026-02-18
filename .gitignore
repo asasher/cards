@@ -1,0 +1,13 @@
+node_modules
+.env
+.env.*
+!.env.example
+.dev-app-port
+.dev-db-port
+.turbo
+.DS_Store
+dist
+build
+.output
+coverage
+.drizzle

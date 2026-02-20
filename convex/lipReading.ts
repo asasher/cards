@@ -609,6 +609,9 @@ export const getState = query({
     const guesserToken = getGuesserToken(players, session.turnToken)
     const deckCardIds = session.deckCardIds ?? []
     const deckCursor = session.deckCursor ?? 0
+    const activeCardId =
+      session.phase === 'round' ? (deckCardIds[deckCursor] ?? null) : null
+    const activeCard = activeCardId ? await ctx.db.get(activeCardId) : null
     const presenceRows = await getPresence(ctx, session._id)
     const now = Date.now()
 
@@ -664,8 +667,8 @@ export const getState = query({
             })(),
           }
         : null,
-      activeCardId:
-        session.phase === 'round' ? (deckCardIds[deckCursor] ?? null) : null,
+      activeCardId,
+      activeCardText: activeCard?.text ?? null,
       roundExpired:
         session.phase === 'round' &&
         !!session.roundEndsAt &&

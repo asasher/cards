@@ -198,6 +198,7 @@ function LipReadGame() {
             deckCursor: 0,
           },
           activeCardId: state.session.deckCardIds[0] ?? null,
+          activeCardText: null,
           roundExpired: false,
         },
       )
@@ -220,6 +221,22 @@ function LipReadGame() {
 
       const nextCursor = state.session.deckCursor + 1
       const isDeckComplete = nextCursor >= state.session.deckCardIds.length
+      const guesserToken =
+        args.result === 'correct'
+          ? state.players.find((player) => player.token !== state.session.turnToken)?.token ?? null
+          : null
+      const optimisticPlayers =
+        guesserToken === null
+          ? state.players
+          : state.players.map((player) =>
+              player.token === guesserToken
+                ? { ...player, score: player.score + 1 }
+                : player,
+            )
+      const optimisticMe =
+        !state.me || guesserToken === null || state.me.token !== guesserToken
+          ? state.me
+          : { ...state.me, score: state.me.score + 1 }
 
       if (isDeckComplete) {
         const nextTurnToken =
@@ -239,19 +256,20 @@ function LipReadGame() {
               deckCardIds: [],
               deckCursor: 0,
             },
-            players: state.players.map((player) => ({
+            players: optimisticPlayers.map((player) => ({
               ...player,
               isTurn: player.token === nextTurnToken,
               isGuesser: false,
             })),
-            me: state.me
+            me: optimisticMe
               ? {
-                  ...state.me,
-                  isTurn: state.me.token === nextTurnToken,
+                  ...optimisticMe,
+                  isTurn: optimisticMe.token === nextTurnToken,
                   isGuesser: false,
                 }
               : null,
             activeCardId: null,
+            activeCardText: null,
             roundExpired: false,
           },
         )
@@ -267,7 +285,10 @@ function LipReadGame() {
             ...state.session,
             deckCursor: nextCursor,
           },
+          players: optimisticPlayers,
+          me: optimisticMe,
           activeCardId: state.session.deckCardIds[nextCursor] ?? null,
+          activeCardText: null,
           roundExpired: false,
         },
       )
@@ -319,6 +340,8 @@ function LipReadGame() {
 
   const roundEndsAt = state?.session.roundEndsAt ?? null
   const roundNumber = state?.session.roundNumber ?? 0
+  const localRoundExpired =
+    phase === 'round' && typeof roundEndsAt === 'number' && roundEndsAt <= now
   const secondsLeft =
     roundEndsAt && state?.session.phase === 'round'
       ? Math.max(0, Math.ceil((roundEndsAt - now) / 1000))
@@ -332,9 +355,9 @@ function LipReadGame() {
       ? (() => {
           const activeCardId = state?.activeCardId
           if (!activeCardId) {
-            return 'No card available'
+            return 'Loading card...'
           }
-          return cardsById.get(activeCardId)?.text ?? 'No card available'
+          return cardsById.get(activeCardId)?.text ?? state.activeCardText ?? 'Loading card...'
         })()
       : ''
 
@@ -386,6 +409,21 @@ function LipReadGame() {
   }, [])
 
   useEffect(() => {
+    const syncNow = () => setNow(Date.now())
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncNow()
+      }
+    }
+    window.addEventListener('focus', syncNow)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.removeEventListener('focus', syncNow)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [])
+
+  useEffect(() => {
     if (!state || !me || !roomCode) {
       return
     }
@@ -404,7 +442,7 @@ function LipReadGame() {
       !state ||
       !me ||
       state.session.phase !== 'round' ||
-      !state.roundExpired ||
+      !localRoundExpired ||
       !me.isTurn ||
       !roomCode
     ) {
@@ -420,7 +458,7 @@ function LipReadGame() {
     void endRound({ code: roomCode, playerToken }).catch(() => {
       endingRoundRef.current = false
     })
-  }, [state, me, roomCode, playerToken, endRound])
+  }, [state, me, localRoundExpired, roomCode, playerToken, endRound])
 
   useEffect(() => {
     if (!canQueryRoom || state !== null) {
@@ -495,16 +533,14 @@ function LipReadGame() {
       return
     }
 
+    const roomCodeToLeave = roomCode
     setWorkingAction('leave')
     setFeedback('')
-    try {
-      await leaveSession({ code: roomCode, playerToken })
-    } catch (error) {
+    clearRoom()
+    setWorkingAction('')
+    void leaveSession({ code: roomCodeToLeave, playerToken }).catch((error) => {
       setFeedback(getErrorMessage(error))
-    } finally {
-      clearRoom()
-      setWorkingAction('')
-    }
+    })
   }
 
   const onAddCard = async (event: FormEvent) => {
@@ -561,7 +597,10 @@ function LipReadGame() {
   }
 
   const onCardResult = (result: 'correct' | 'skip') => {
-    if (!roomCode || !state?.activeCardId) {
+    if (!roomCode || !state?.activeCardId || localRoundExpired) {
+      if (roomCode && me?.isTurn && localRoundExpired) {
+        void endRound({ code: roomCode, playerToken }).catch(() => undefined)
+      }
       return
     }
 
@@ -1171,6 +1210,7 @@ function LipReadGame() {
         <div style={{ display: 'flex', gap: 12, padding: '0 16px 22px', flexShrink: 0 }}>
           <button
             onClick={() => onCardResult('skip')}
+            disabled={localRoundExpired}
             style={{
               flex: 1,
               height: 62,
@@ -1187,6 +1227,7 @@ function LipReadGame() {
           </button>
           <button
             onClick={() => onCardResult('correct')}
+            disabled={localRoundExpired}
             style={{
               flex: 2,
               height: 62,

@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useMutation, useQuery } from 'convex/react'
+import { ConvexProvider, ConvexReactClient, useMutation, useQuery } from 'convex/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
 import { api } from '../../convex/_generated/api'
@@ -28,6 +28,22 @@ const CARD_COLORS = [
   '#E040FB',
   '#00B4D8',
 ]
+
+let convexClient: ConvexReactClient | null = null
+
+function getConvexClient() {
+  const convexUrl = import.meta.env.VITE_CONVEX_URL
+  if (!convexUrl) {
+    return null
+  }
+
+  if (convexClient) {
+    return convexClient
+  }
+
+  convexClient = new ConvexReactClient(convexUrl)
+  return convexClient
+}
 
 function safeStorageGet(key: string) {
   if (typeof window === 'undefined') {
@@ -84,7 +100,52 @@ function formatSeconds(seconds: number) {
 }
 
 function LipRead() {
-  const convexUrl = import.meta.env.VITE_CONVEX_URL
+  const client = getConvexClient()
+  if (!client) {
+    return <MissingConvexConfig />
+  }
+
+  return (
+    <ConvexProvider client={client}>
+      <LipReadGame />
+    </ConvexProvider>
+  )
+}
+
+function MissingConvexConfig() {
+  const pageStyle: CSSProperties = {
+    position: 'fixed',
+    inset: 0,
+    background: '#FAFAFA',
+    fontFamily: "'Nunito', sans-serif",
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+  }
+
+  return (
+    <div style={pageStyle}>
+      <div
+        style={{
+          margin: 'auto',
+          width: 'min(420px, 92vw)',
+          borderRadius: 20,
+          border: '3px solid #222',
+          boxShadow: '6px 6px 0 #222',
+          background: '#fff',
+          padding: 24,
+        }}
+      >
+        <h2 style={{ margin: 0, fontFamily: "'Fredoka One', sans-serif", fontSize: 28 }}>
+          Missing `VITE_CONVEX_URL`
+        </h2>
+        <p style={{ marginBottom: 0, color: '#333' }}>Set the env var and reload.</p>
+      </div>
+    </div>
+  )
+}
+
+function LipReadGame() {
   const [playerToken] = useState(getPlayerToken)
   const [name, setName] = useState(() => safeStorageGet(NAME_STORAGE_KEY) ?? '')
   const [roomInput, setRoomInput] = useState(() => safeStorageGet(ROOM_STORAGE_KEY) ?? '')
@@ -432,30 +493,6 @@ function LipRead() {
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
-  }
-
-  if (!convexUrl) {
-    return (
-      <div style={pageStyle}>
-        <style>{css}</style>
-        <div
-          style={{
-            margin: 'auto',
-            width: 'min(420px, 92vw)',
-            borderRadius: 20,
-            border: '3px solid #222',
-            boxShadow: '6px 6px 0 #222',
-            background: '#fff',
-            padding: 24,
-          }}
-        >
-          <h2 style={{ margin: 0, fontFamily: "'Fredoka One', sans-serif", fontSize: 28 }}>
-            Missing `VITE_CONVEX_URL`
-          </h2>
-          <p style={{ marginBottom: 0, color: '#333' }}>Set the env var and reload.</p>
-        </div>
-      </div>
-    )
   }
 
   if (!roomCode) {

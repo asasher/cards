@@ -90,12 +90,23 @@ async function getPlayers(
   ctx: MutationCtx | QueryCtx,
   sessionId: Id<'sessions'>,
 ): Promise<PlayerDoc[]> {
-  const players = await ctx.db
+  return await ctx.db
     .query('players')
-    .withIndex('by_session', (q) => q.eq('sessionId', sessionId))
+    .withIndex('by_session_joined_at', (q) => q.eq('sessionId', sessionId))
     .collect()
+}
 
-  return players.sort((a, b) => a.joinedAt - b.joinedAt)
+async function getPlayerBySessionToken(
+  ctx: MutationCtx | QueryCtx,
+  sessionId: Id<'sessions'>,
+  playerToken: string,
+): Promise<PlayerDoc | null> {
+  return await ctx.db
+    .query('players')
+    .withIndex('by_session_token', (q) =>
+      q.eq('sessionId', sessionId).eq('token', playerToken),
+    )
+    .first()
 }
 
 async function getPresence(
@@ -116,8 +127,8 @@ async function getAllCards(ctx: MutationCtx | QueryCtx): Promise<CardDoc[]> {
 }
 
 async function ensureDefaultCards(ctx: MutationCtx) {
-  const existingCards = await getAllCards(ctx)
-  if (existingCards.length > 0) {
+  const existingCard = await ctx.db.query('cards').withIndex('by_created_at').first()
+  if (existingCard) {
     return
   }
 
@@ -286,8 +297,7 @@ export const joinSession = mutation({
       throw new ConvexError('Room not found.')
     }
 
-    const players = await getPlayers(ctx, session._id)
-    const existing = players.find((player) => player.token === playerToken)
+    const existing = await getPlayerBySessionToken(ctx, session._id, playerToken)
 
     if (existing) {
       await ctx.db.patch(existing._id, { name })
@@ -295,6 +305,7 @@ export const joinSession = mutation({
       return { code: session.code }
     }
 
+    const players = await getPlayers(ctx, session._id)
     if (players.length >= 2) {
       throw new ConvexError('This room already has 2 players.')
     }
@@ -367,13 +378,12 @@ export const leaveSession = mutation({
 
 export const heartbeatPresence = mutation({
   args: {
-    code: v.string(),
+    sessionId: v.id('sessions'),
     playerToken: v.string(),
   },
   handler: async (ctx, args) => {
     const playerToken = validatePlayerToken(args.playerToken)
-    const { session } = await ensureParticipant(ctx, args.code, playerToken)
-    await touchPresence(ctx, session._id, playerToken)
+    await touchPresence(ctx, args.sessionId, playerToken)
   },
 })
 
@@ -604,16 +614,22 @@ export const getState = query({
       return null
     }
 
-    const players = await getPlayers(ctx, session._id)
-    const me = players.find((player) => player.token === args.playerToken) ?? null
-    const guesserToken = getGuesserToken(players, session.turnToken)
     const deckCardIds = session.deckCardIds ?? []
     const deckCursor = session.deckCursor ?? 0
     const activeCardId =
       session.phase === 'round' ? (deckCardIds[deckCursor] ?? null) : null
-    const activeCard = activeCardId ? await ctx.db.get(activeCardId) : null
-    const presenceRows = await getPresence(ctx, session._id)
+
+    const [players, presenceRows, activeCard] = await Promise.all([
+      getPlayers(ctx, session._id),
+      getPresence(ctx, session._id),
+      activeCardId ? ctx.db.get(activeCardId) : Promise.resolve(null),
+    ])
+
+    const me = players.find((player) => player.token === args.playerToken) ?? null
+    const guesserToken = getGuesserToken(players, session.turnToken)
     const now = Date.now()
+    const roundExpired =
+      session.phase === 'round' && !!session.roundEndsAt && session.roundEndsAt <= now
 
     const lastSeenByToken = new Map<string, number>()
     for (const row of presenceRows) {
@@ -625,6 +641,7 @@ export const getState = query({
 
     return {
       session: {
+        id: session._id,
         code: session.code,
         gameKey: session.gameKey,
         phase: session.phase,
@@ -669,10 +686,7 @@ export const getState = query({
         : null,
       activeCardId,
       activeCardText: activeCard?.text ?? null,
-      roundExpired:
-        session.phase === 'round' &&
-        !!session.roundEndsAt &&
-        session.roundEndsAt <= Date.now(),
+      roundExpired,
       presenceStaleMs: PRESENCE_STALE_MS,
     }
   },

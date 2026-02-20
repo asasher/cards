@@ -13,6 +13,7 @@ export const Route = createFileRoute('/')({
 const NAME_STORAGE_KEY = 'cards.lipread.name'
 const PLAYER_TOKEN_STORAGE_KEY = 'cards.lipread.playerToken'
 const ROOM_STORAGE_KEY = 'cards.lipread.roomCode'
+const HEARTBEAT_INTERVAL_MS = 8_000
 
 const CARD_COLORS = [
   '#FF6B6B',
@@ -316,9 +317,9 @@ function LipReadGame() {
       )
     },
   )
-  const sharedCards = useQuery(api.lipReading.listCards)
-
   const roomCode = useMemo(() => normalizeCode(activeCode), [activeCode])
+  const shouldLoadCards = showCardsPanel || roomCode.length > 0
+  const sharedCards = useQuery(api.lipReading.listCards, shouldLoadCards ? {} : 'skip')
   const canQueryRoom = roomCode.length > 0 && playerToken.length > 0
   const state = useQuery(
     api.lipReading.getState,
@@ -332,11 +333,17 @@ function LipReadGame() {
     () => new Map(cards.map((card) => [card.id, card])),
     [cards],
   )
-  const myPlayer = players.find((player) => player.token === playerToken) ?? null
-  const otherPlayer = players.find((player) => player.token !== playerToken) ?? null
+  const [myPlayer, otherPlayer] = useMemo(() => {
+    const mine = players.find((player) => player.token === playerToken) ?? null
+    const other = players.find((player) => player.token !== playerToken) ?? null
+    return [mine, other]
+  }, [players, playerToken])
   const myScore = myPlayer?.score ?? 0
   const theirScore = otherPlayer?.score ?? 0
   const phase = state?.session.phase ?? 'lobby'
+  const sessionId = state?.session.id ?? null
+  const shouldTickRoundClock = phase === 'round'
+  const canHeartbeat = Boolean(roomCode && me && sessionId)
 
   const roundEndsAt = state?.session.roundEndsAt ?? null
   const roundNumber = state?.session.roundNumber ?? 0
@@ -385,8 +392,12 @@ function LipReadGame() {
   }, [])
 
   useEffect(() => {
+    if (!shouldLoadCards) {
+      return
+    }
+
     void ensureCardsInitialized({}).catch(() => undefined)
-  }, [ensureCardsInitialized])
+  }, [shouldLoadCards, ensureCardsInitialized])
 
   useEffect(() => {
     safeStorageSet(NAME_STORAGE_KEY, name)
@@ -402,11 +413,16 @@ function LipReadGame() {
   }, [activeCode])
 
   useEffect(() => {
+    if (!shouldTickRoundClock) {
+      setNow(Date.now())
+      return
+    }
+
     const timerId = window.setInterval(() => {
       setNow(Date.now())
     }, 500)
     return () => window.clearInterval(timerId)
-  }, [])
+  }, [shouldTickRoundClock])
 
   useEffect(() => {
     const syncNow = () => setNow(Date.now())
@@ -424,18 +440,18 @@ function LipReadGame() {
   }, [])
 
   useEffect(() => {
-    if (!state || !me || !roomCode) {
+    if (!canHeartbeat || !sessionId) {
       return
     }
 
     const ping = () => {
-      void heartbeatPresence({ code: roomCode, playerToken }).catch(() => undefined)
+      void heartbeatPresence({ sessionId, playerToken }).catch(() => undefined)
     }
 
     ping()
-    const intervalId = window.setInterval(ping, 5_000)
+    const intervalId = window.setInterval(ping, HEARTBEAT_INTERVAL_MS)
     return () => window.clearInterval(intervalId)
-  }, [state, me, roomCode, playerToken, heartbeatPresence])
+  }, [canHeartbeat, sessionId, playerToken, heartbeatPresence])
 
   useEffect(() => {
     if (

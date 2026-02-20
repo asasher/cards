@@ -25,6 +25,7 @@ export default defineSchema({
     joinedAt: v.number(),
   })
     .index('by_session', ['sessionId'])
+    .index('by_session_joined_at', ['sessionId', 'joinedAt'])
     .index('by_session_token', ['sessionId', 'token']),
 
   presence: defineTable({

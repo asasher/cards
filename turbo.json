@@ -14,5 +14,6 @@
     },
     "lint": {},
     "test": {}
-  }
+  },
+  "globalEnv": ["CONVEX_DEPLOY_URL"]
 }

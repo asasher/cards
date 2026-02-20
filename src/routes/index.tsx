@@ -168,10 +168,133 @@ function LipReadGame() {
   const heartbeatPresence = useMutation(api.lipReading.heartbeatPresence)
   const addCard = useMutation(api.lipReading.addCard)
   const deleteCard = useMutation(api.lipReading.deleteCard)
-  const startRound = useMutation(api.lipReading.startRound)
-  const markCardResult = useMutation(api.lipReading.markCardResult)
+  const startRound = useMutation(api.lipReading.startRound).withOptimisticUpdate(
+    (localStore, args) => {
+      const state = localStore.getQuery(api.lipReading.getState, {
+        code: args.code,
+        playerToken: args.playerToken,
+      })
+      if (!state) {
+        return
+      }
+
+      const optimisticDurationSeconds = Math.max(
+        20,
+        Math.min(180, Math.floor(args.durationSeconds ?? state.session.roundDurationSeconds)),
+      )
+      const nowMs = Date.now()
+
+      localStore.setQuery(
+        api.lipReading.getState,
+        { code: args.code, playerToken: args.playerToken },
+        {
+          ...state,
+          session: {
+            ...state.session,
+            phase: 'round',
+            roundNumber: state.session.roundNumber + 1,
+            roundDurationSeconds: optimisticDurationSeconds,
+            roundEndsAt: nowMs + optimisticDurationSeconds * 1000,
+            deckCursor: 0,
+          },
+          activeCardId: state.session.deckCardIds[0] ?? null,
+          roundExpired: false,
+        },
+      )
+    },
+  )
+  const markCardResult = useMutation(api.lipReading.markCardResult).withOptimisticUpdate(
+    (localStore, args) => {
+      const state = localStore.getQuery(api.lipReading.getState, {
+        code: args.code,
+        playerToken: args.playerToken,
+      })
+      if (
+        !state ||
+        state.session.phase !== 'round' ||
+        state.session.turnToken !== args.playerToken ||
+        state.session.deckCardIds.length === 0
+      ) {
+        return
+      }
+
+      const nextCursor = state.session.deckCursor + 1
+      const isDeckComplete = nextCursor >= state.session.deckCardIds.length
+
+      if (isDeckComplete) {
+        const nextTurnToken =
+          state.players.find((player) => player.token !== state.session.turnToken)?.token ??
+          state.session.turnToken
+
+        localStore.setQuery(
+          api.lipReading.getState,
+          { code: args.code, playerToken: args.playerToken },
+          {
+            ...state,
+            session: {
+              ...state.session,
+              phase: 'round_over',
+              turnToken: nextTurnToken,
+              roundEndsAt: null,
+              deckCardIds: [],
+              deckCursor: 0,
+            },
+            players: state.players.map((player) => ({
+              ...player,
+              isTurn: player.token === nextTurnToken,
+              isGuesser: false,
+            })),
+            me: state.me
+              ? {
+                  ...state.me,
+                  isTurn: state.me.token === nextTurnToken,
+                  isGuesser: false,
+                }
+              : null,
+            activeCardId: null,
+            roundExpired: false,
+          },
+        )
+        return
+      }
+
+      localStore.setQuery(
+        api.lipReading.getState,
+        { code: args.code, playerToken: args.playerToken },
+        {
+          ...state,
+          session: {
+            ...state.session,
+            deckCursor: nextCursor,
+          },
+          activeCardId: state.session.deckCardIds[nextCursor] ?? null,
+          roundExpired: false,
+        },
+      )
+    },
+  )
   const endRound = useMutation(api.lipReading.endRound)
-  const resetScores = useMutation(api.lipReading.resetScores)
+  const resetScores = useMutation(api.lipReading.resetScores).withOptimisticUpdate(
+    (localStore, args) => {
+      const state = localStore.getQuery(api.lipReading.getState, {
+        code: args.code,
+        playerToken: args.playerToken,
+      })
+      if (!state) {
+        return
+      }
+
+      localStore.setQuery(
+        api.lipReading.getState,
+        { code: args.code, playerToken: args.playerToken },
+        {
+          ...state,
+          players: state.players.map((player) => ({ ...player, score: 0 })),
+          me: state.me ? { ...state.me, score: 0 } : null,
+        },
+      )
+    },
+  )
   const sharedCards = useQuery(api.lipReading.listCards)
 
   const roomCode = useMemo(() => normalizeCode(activeCode), [activeCode])
@@ -183,11 +306,16 @@ function LipReadGame() {
 
   const me = state?.me ?? null
   const players = state?.players ?? []
-  const cards = state?.cards ?? sharedCards ?? []
+  const cards = sharedCards ?? []
+  const cardsById = useMemo(
+    () => new Map(cards.map((card) => [card.id, card])),
+    [cards],
+  )
   const myPlayer = players.find((player) => player.token === playerToken) ?? null
   const otherPlayer = players.find((player) => player.token !== playerToken) ?? null
   const myScore = myPlayer?.score ?? 0
   const theirScore = otherPlayer?.score ?? 0
+  const phase = state?.session.phase ?? 'lobby'
 
   const roundEndsAt = state?.session.roundEndsAt ?? null
   const roundNumber = state?.session.roundNumber ?? 0
@@ -199,6 +327,16 @@ function LipReadGame() {
     state?.session.phase === 'round' && state.session.roundDurationSeconds > 0
       ? Math.min(100, Math.max(0, (secondsLeft / state.session.roundDurationSeconds) * 100))
       : 100
+  const activeCardText =
+    phase === 'round' && me?.isTurn
+      ? (() => {
+          const activeCardId = state?.activeCardId
+          if (!activeCardId) {
+            return 'No card available'
+          }
+          return cardsById.get(activeCardId)?.text ?? 'No card available'
+        })()
+      : ''
 
   const triggerSparkles = () => {
     const newSparkles = Array.from({ length: 8 }, (_, index) => ({
@@ -422,23 +560,18 @@ function LipReadGame() {
     }
   }
 
-  const onCardResult = async (result: 'correct' | 'skip') => {
-    if (!roomCode) {
+  const onCardResult = (result: 'correct' | 'skip') => {
+    if (!roomCode || !state?.activeCardId) {
       return
     }
 
-    setWorkingAction(result)
     setFeedback('')
-    try {
-      await markCardResult({ code: roomCode, playerToken, result })
-      if (result === 'correct') {
-        triggerSparkles()
-      }
-    } catch (error) {
-      setFeedback(getErrorMessage(error))
-    } finally {
-      setWorkingAction('')
+    if (result === 'correct') {
+      triggerSparkles()
     }
+    void markCardResult({ code: roomCode, playerToken, result }).catch((error) => {
+      setFeedback(getErrorMessage(error))
+    })
   }
 
   const onResetScores = async () => {
@@ -483,6 +616,7 @@ function LipReadGame() {
     button:hover { transform: scale(1.04); }
     button:active { transform: scale(0.97); }
     input:focus, textarea:focus { outline: none; border-color: #333 !important; }
+    input, textarea { font-size: 16px !important; }
   `
 
   const pageStyle: CSSProperties = {
@@ -801,7 +935,6 @@ function LipReadGame() {
   }
 
   const loadingRoom = state === undefined
-  const phase = state?.session.phase ?? 'lobby'
 
   return (
     <div style={pageStyle}>
@@ -1015,14 +1148,14 @@ function LipReadGame() {
           >
             {loadingRoom
               ? 'Loading…'
-              : phase !== 'round'
-                ? players.length === 2
-                  ? me?.isHost
-                    ? 'Start the next round'
-                    : 'Waiting for host to start'
+                : phase !== 'round'
+                  ? players.length === 2
+                    ? me?.isHost
+                      ? 'Start the next round'
+                      : 'Waiting for host to start'
                   : 'Need 2 players'
                 : me?.isTurn
-                  ? (state?.activeCard?.text ?? 'No card available')
+                  ? activeCardText
                   : 'Guess out loud while your teammate mouths the card!'}
           </div>
         </div>
@@ -1038,7 +1171,6 @@ function LipReadGame() {
         <div style={{ display: 'flex', gap: 12, padding: '0 16px 22px', flexShrink: 0 }}>
           <button
             onClick={() => onCardResult('skip')}
-            disabled={workingAction === 'skip' || workingAction === 'correct'}
             style={{
               flex: 1,
               height: 62,
@@ -1055,7 +1187,6 @@ function LipReadGame() {
           </button>
           <button
             onClick={() => onCardResult('correct')}
-            disabled={workingAction === 'skip' || workingAction === 'correct'}
             style={{
               flex: 2,
               height: 62,
@@ -1068,7 +1199,7 @@ function LipReadGame() {
               boxShadow: '4px 4px 0 #222',
             }}
           >
-            ✓ Got it! (+1 guesser)
+            ✓ Got it!
           </button>
         </div>
       ) : null}

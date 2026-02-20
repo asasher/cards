@@ -109,8 +109,10 @@ async function getPresence(
 }
 
 async function getAllCards(ctx: MutationCtx | QueryCtx): Promise<CardDoc[]> {
-  const cards = await ctx.db.query('cards').collect()
-  return cards.sort((a, b) => a.createdAt - b.createdAt)
+  return await ctx.db
+    .query('cards')
+    .withIndex('by_created_at')
+    .collect()
 }
 
 async function ensureDefaultCards(ctx: MutationCtx) {
@@ -605,10 +607,8 @@ export const getState = query({
     const players = await getPlayers(ctx, session._id)
     const me = players.find((player) => player.token === args.playerToken) ?? null
     const guesserToken = getGuesserToken(players, session.turnToken)
-    const activeCardId =
-      session.phase === 'round' ? session.deckCardIds?.[session.deckCursor ?? 0] : undefined
-    const activeCard = activeCardId ? await ctx.db.get(activeCardId) : null
-    const cards = await getAllCards(ctx)
+    const deckCardIds = session.deckCardIds ?? []
+    const deckCursor = session.deckCursor ?? 0
     const presenceRows = await getPresence(ctx, session._id)
     const now = Date.now()
 
@@ -630,6 +630,8 @@ export const getState = query({
         roundNumber: session.roundNumber,
         roundDurationSeconds: session.roundDurationSeconds,
         roundEndsAt: session.roundEndsAt ?? null,
+        deckCardIds,
+        deckCursor,
       },
       players: players.map((player) => {
         const lastSeenAt = lastSeenByToken.get(player.token) ?? null
@@ -662,17 +664,8 @@ export const getState = query({
             })(),
           }
         : null,
-      cards: cards.map((card) => ({
-        id: card._id,
-        text: card.text,
-        source: card.source,
-      })),
-      activeCard: activeCard
-        ? {
-            id: activeCard._id,
-            text: activeCard.text,
-          }
-        : null,
+      activeCardId:
+        session.phase === 'round' ? (deckCardIds[deckCursor] ?? null) : null,
       roundExpired:
         session.phase === 'round' &&
         !!session.roundEndsAt &&

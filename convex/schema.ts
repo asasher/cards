@@ -42,5 +42,5 @@ export default defineSchema({
     source: v.union(v.literal('default'), v.literal('custom')),
     createdByToken: v.optional(v.string()),
     createdAt: v.number(),
-  }),
+  }).index('by_created_at', ['createdAt']),
 })

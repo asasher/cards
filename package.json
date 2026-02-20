@@ -10,6 +10,7 @@
     "dev:web": "portless app.cards vite dev",
     "dev:convex": "convex dev",
     "build": "vite build",
+    "build:vercel": "convex deploy --cmd-url-env-var-name VITE_CONVEX_URL --cmd \"bunx turbo run build\"",
     "preview": "vite preview",
     "test": "vitest run",
     "lint": "eslint",

@@ -2,17 +2,19 @@ import { createFileRoute } from '@tanstack/react-router'
 import { ConvexProvider, ConvexReactClient, useMutation, useQuery } from 'convex/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
+import QRCode from 'react-qr-code'
 import { api } from '../../convex/_generated/api'
 import type { Id } from '../../convex/_generated/dataModel'
+import { persistPlayerName, resolveInitialPlayerName } from '../lib/lipReadName'
 
 export const Route = createFileRoute('/')({
   ssr: false,
   component: LipRead,
 })
 
-const NAME_STORAGE_KEY = 'cards.lipread.name'
 const PLAYER_TOKEN_STORAGE_KEY = 'cards.lipread.playerToken'
 const ROOM_STORAGE_KEY = 'cards.lipread.roomCode'
+const ROOM_QUERY_PARAM = 'room'
 const HEARTBEAT_INTERVAL_MS = 8_000
 
 const CARD_COLORS = [
@@ -86,6 +88,35 @@ function normalizeCode(code: string) {
   return code.trim().toUpperCase()
 }
 
+export function resolveInitialRoomInput(
+  storageGet: (key: string) => string | null = safeStorageGet,
+  locationSearch = typeof window === 'undefined' ? '' : window.location.search,
+) {
+  const roomFromSearch = new URLSearchParams(locationSearch).get(ROOM_QUERY_PARAM)
+  if (roomFromSearch && roomFromSearch.trim()) {
+    return normalizeCode(roomFromSearch)
+  }
+  return storageGet(ROOM_STORAGE_KEY) ?? ''
+}
+
+export function buildInviteUrl(
+  code: string,
+  currentLocation: Pick<Location, 'href'> | null =
+    typeof window === 'undefined' ? null : window.location,
+) {
+  const normalizedCode = normalizeCode(code)
+  if (!normalizedCode) {
+    return ''
+  }
+  if (!currentLocation) {
+    return normalizedCode
+  }
+
+  const inviteUrl = new URL(currentLocation.href)
+  inviteUrl.searchParams.set(ROOM_QUERY_PARAM, normalizedCode)
+  return inviteUrl.toString()
+}
+
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
     return error.message
@@ -146,10 +177,320 @@ function MissingConvexConfig() {
   )
 }
 
-function LipReadGame() {
+type CombinedEntryPanelProps = {
+  name: string
+  roomInput: string
+  roomCode: string
+  inviteUrl: string
+  inviteQrValue: string
+  feedback: string
+  joinedName: string
+  inviteStatus: string
+  playersCount: number
+  workingAction: string
+  nameChangesApplyNextTime: boolean
+  onNameChange: (value: string) => void
+  onRoomInputChange: (value: string) => void
+  onCreateSubmit: (event: FormEvent) => void
+  onJoinSubmit: (event: FormEvent) => void
+  onLeaveRoom: () => void
+}
+
+export function CombinedEntryPanel({
+  name,
+  roomInput,
+  roomCode,
+  inviteUrl,
+  inviteQrValue,
+  feedback,
+  joinedName,
+  inviteStatus,
+  playersCount,
+  workingAction,
+  nameChangesApplyNextTime,
+  onNameChange,
+  onRoomInputChange,
+  onCreateSubmit,
+  onJoinSubmit,
+  onLeaveRoom,
+}: CombinedEntryPanelProps) {
+  const hasInvite = roomCode.length > 0
+
+  return (
+    <div style={{ width: '100%', maxWidth: hasInvite ? 920 : 420, zIndex: 1 }}>
+      <div style={{ textAlign: 'center', marginBottom: 28, animation: 'bounceIn 0.6s cubic-bezier(0.34,1.56,0.64,1)' }}>
+        <div
+          style={{
+            display: 'inline-block',
+            background: CARD_COLORS[0],
+            borderRadius: 24,
+            padding: '16px 30px',
+            boxShadow: '6px 6px 0 #222',
+            border: '3px solid #222',
+            marginBottom: 12,
+          }}
+        >
+          <div
+            style={{
+              fontFamily: "'Fredoka One', sans-serif",
+              fontSize: 'clamp(34px,9vw,52px)',
+              color: '#fff',
+              lineHeight: 1,
+            }}
+          >
+            Lip Read!
+          </div>
+        </div>
+        <div style={{ fontWeight: 700, color: '#666', fontSize: 14 }}>realtime room play with Convex</div>
+      </div>
+
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'stretch',
+          justifyContent: 'center',
+          gap: 14,
+        }}
+      >
+        <div
+          style={{
+            flex: hasInvite ? '1 1 360px' : '1 1 420px',
+            minWidth: 0,
+            maxWidth: 420,
+          }}
+        >
+          <div
+            style={{
+              background: '#fff',
+              borderRadius: 20,
+              border: '3px solid #222',
+              boxShadow: '5px 5px 0 #222',
+              padding: 22,
+              animation: 'slideUp 0.45s 0.05s ease both',
+            }}
+          >
+            <div style={{ fontWeight: 800, fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#888', marginBottom: 8 }}>
+              Your Name
+            </div>
+            <input
+              value={name}
+              onChange={(event) => onNameChange(event.target.value)}
+              maxLength={24}
+              placeholder="Player name"
+              style={{
+                width: '100%',
+                height: 50,
+                border: '3px solid #222',
+                borderRadius: 14,
+                padding: '0 14px',
+                fontFamily: "'Nunito', sans-serif",
+                fontSize: 15,
+                fontWeight: 700,
+                color: '#222',
+                boxShadow: '3px 3px 0 #222',
+              }}
+            />
+
+            {hasInvite ? (
+              <>
+                <div
+                  style={{
+                    marginTop: 14,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    borderRadius: 999,
+                    border: '3px solid #222',
+                    background: '#FFF4DA',
+                    padding: '8px 12px',
+                    boxShadow: '3px 3px 0 #222',
+                    fontSize: 12,
+                    fontWeight: 800,
+                    color: '#333',
+                  }}
+                >
+                  <span>{inviteStatus}</span>
+                  <span>•</span>
+                  <span>{playersCount}/2 players</span>
+                </div>
+                <p style={{ marginTop: 14, marginBottom: 0, color: '#333', fontWeight: 700, lineHeight: 1.45 }}>
+                  You&apos;re in room <span style={{ fontFamily: "'Fredoka One', sans-serif" }}>{roomCode}</span>
+                  {joinedName ? ` as ${joinedName}.` : '.'}
+                </p>
+                {nameChangesApplyNextTime ? (
+                  <p style={{ marginTop: 8, marginBottom: 0, color: '#666', fontSize: 13, fontWeight: 700, lineHeight: 1.45 }}>
+                    Name edits here will apply the next time you create or join a room.
+                  </p>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={onLeaveRoom}
+                  disabled={workingAction === 'leave'}
+                  style={{
+                    width: '100%',
+                    height: 50,
+                    marginTop: 16,
+                    background: '#fff',
+                    color: '#222',
+                    border: '3px solid #222',
+                    borderRadius: 14,
+                    fontFamily: "'Fredoka One', sans-serif",
+                    fontSize: 18,
+                    boxShadow: '4px 4px 0 #222',
+                  }}
+                >
+                  {workingAction === 'leave' ? 'Leaving…' : 'Exit Room'}
+                </button>
+              </>
+            ) : (
+              <>
+                <form onSubmit={onCreateSubmit} style={{ marginTop: 12 }}>
+                  <button
+                    type="submit"
+                    disabled={workingAction === 'create'}
+                    style={{
+                      width: '100%',
+                      height: 52,
+                      background: CARD_COLORS[0],
+                      color: '#fff',
+                      border: '3px solid #222',
+                      borderRadius: 14,
+                      fontFamily: "'Fredoka One', sans-serif",
+                      fontSize: 20,
+                      boxShadow: '4px 4px 0 #222',
+                    }}
+                  >
+                    {workingAction === 'create' ? 'Creating…' : 'Create Room'}
+                  </button>
+                </form>
+
+                <form
+                  onSubmit={onJoinSubmit}
+                  style={{
+                    display: 'grid',
+                    gap: 10,
+                    marginTop: 14,
+                  }}
+                >
+                  <div style={{ fontWeight: 800, fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#888' }}>
+                    Join with a code
+                  </div>
+                  <input
+                    value={roomInput}
+                    onChange={(event) => onRoomInputChange(normalizeCode(event.target.value))}
+                    maxLength={8}
+                    placeholder="enter room code…"
+                    style={{
+                      width: '100%',
+                      height: 52,
+                      border: '3px solid #222',
+                      borderRadius: 14,
+                      fontFamily: "'Nunito', sans-serif",
+                      fontWeight: 800,
+                      fontSize: 15,
+                      padding: '0 14px',
+                      color: '#222',
+                      background: '#fff',
+                      boxShadow: '4px 4px 0 #222',
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    disabled={workingAction === 'join'}
+                    style={{
+                      width: '100%',
+                      height: 52,
+                      background: CARD_COLORS[3],
+                      color: '#fff',
+                      border: '3px solid #222',
+                      borderRadius: 14,
+                      fontFamily: "'Fredoka One', sans-serif",
+                      fontSize: 18,
+                      boxShadow: '4px 4px 0 #222',
+                    }}
+                  >
+                    {workingAction === 'join' ? 'Joining…' : 'Join!'}
+                  </button>
+                </form>
+              </>
+            )}
+          </div>
+        </div>
+
+        {hasInvite ? (
+          <div
+            style={{
+              flex: '1 1 300px',
+              minWidth: 0,
+              maxWidth: 420,
+              background: '#fff',
+              borderRadius: 20,
+              border: '3px solid #222',
+              boxShadow: '5px 5px 0 #222',
+              padding: 22,
+              animation: 'slideUp 0.45s 0.12s ease both',
+            }}
+          >
+            <div style={{ fontWeight: 800, fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#888', marginBottom: 8 }}>
+              Invite a friend
+            </div>
+            <div style={{ fontFamily: "'Fredoka One', sans-serif", fontSize: 28, color: '#222', lineHeight: 1 }}>
+              {roomCode}
+            </div>
+            <p style={{ marginTop: 10, marginBottom: 14, color: '#555', fontWeight: 700, lineHeight: 1.45 }}>
+              Scan this QR or open the share link on another phone to join with the same room code.
+            </p>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+                borderRadius: 18,
+                border: '3px solid #222',
+                background: '#fff',
+                boxShadow: '4px 4px 0 #222',
+                padding: 16,
+              }}
+            >
+              <QRCode
+                value={inviteQrValue}
+                size={208}
+                title={`Join room ${roomCode}`}
+                style={{ width: '100%', maxWidth: 208, height: 'auto' }}
+              />
+            </div>
+            <a
+              href={inviteUrl}
+              aria-label="Join room via share link"
+              style={{
+                display: 'block',
+                marginTop: 14,
+                color: '#3B82F6',
+                fontWeight: 800,
+                lineHeight: 1.45,
+                wordBreak: 'break-word',
+              }}
+            >
+              {inviteUrl}
+            </a>
+          </div>
+        ) : null}
+      </div>
+
+      {feedback ? (
+        <p style={{ marginTop: 12, marginBottom: 0, color: '#B42318', fontWeight: 700 }}>
+          {feedback}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+export function LipReadGame() {
   const [playerToken] = useState(getPlayerToken)
-  const [name, setName] = useState(() => safeStorageGet(NAME_STORAGE_KEY) ?? '')
-  const [roomInput, setRoomInput] = useState(() => safeStorageGet(ROOM_STORAGE_KEY) ?? '')
+  const [name, setName] = useState(resolveInitialPlayerName)
+  const [roomInput, setRoomInput] = useState(resolveInitialRoomInput)
   const [activeCode, setActiveCode] = useState(() => safeStorageGet(ROOM_STORAGE_KEY) ?? '')
   const [durationSeconds, setDurationSeconds] = useState(60)
   const [cardDraft, setCardDraft] = useState('')
@@ -400,7 +741,7 @@ function LipReadGame() {
   }, [shouldLoadCards, ensureCardsInitialized])
 
   useEffect(() => {
-    safeStorageSet(NAME_STORAGE_KEY, name)
+    persistPlayerName(name)
   }, [name])
 
   useEffect(() => {
@@ -492,8 +833,7 @@ function LipReadGame() {
     setShowCardsPanel(false)
   }
 
-  const onCreate = async (event: FormEvent) => {
-    event.preventDefault()
+  const onCreate = async () => {
     const trimmedName = name.trim()
     if (!trimmedName) {
       setFeedback('Enter your name first.')
@@ -513,8 +853,12 @@ function LipReadGame() {
     }
   }
 
-  const onJoin = async (event: FormEvent) => {
+  const onCreateSubmit = (event: FormEvent) => {
     event.preventDefault()
+    void onCreate()
+  }
+
+  const onJoin = async () => {
     const trimmedName = name.trim()
     const normalizedInput = normalizeCode(roomInput)
     if (!trimmedName) {
@@ -541,6 +885,11 @@ function LipReadGame() {
     } finally {
       setWorkingAction('')
     }
+  }
+
+  const onJoinSubmit = (event: FormEvent) => {
+    event.preventDefault()
+    void onJoin()
   }
 
   const onLeaveRoom = async () => {
@@ -684,7 +1033,18 @@ function LipReadGame() {
     overflow: 'hidden',
   }
 
-  if (!roomCode) {
+  const loadingRoom = state === undefined
+  const inviteUrl = useMemo(() => buildInviteUrl(roomCode), [roomCode])
+  const inviteQrValue = inviteUrl || roomCode
+  const showCombinedEntryScreen = !roomCode || (phase === 'lobby' && players.length < 2)
+  const joinedName = me?.name ?? name.trim()
+  const nameChangesApplyNextTime = Boolean(me?.name && name.trim() && me.name !== name.trim())
+  const inviteStatus =
+    loadingRoom || players.length === 0 ? 'Setting up your room…' : 'Waiting for player 2 to join'
+
+  if (showCombinedEntryScreen) {
+    const hasInvite = roomCode.length > 0
+
     return (
       <div style={{ ...pageStyle, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
         <style>{css}</style>
@@ -727,136 +1087,24 @@ function LipReadGame() {
           />
         ))}
 
-        <div style={{ width: '100%', maxWidth: 420, zIndex: 1 }}>
-          <div style={{ textAlign: 'center', marginBottom: 28, animation: 'bounceIn 0.6s cubic-bezier(0.34,1.56,0.64,1)' }}>
-            <div
-              style={{
-                display: 'inline-block',
-                background: CARD_COLORS[0],
-                borderRadius: 24,
-                padding: '16px 30px',
-                boxShadow: '6px 6px 0 #222',
-                border: '3px solid #222',
-                marginBottom: 12,
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: "'Fredoka One', sans-serif",
-                  fontSize: 'clamp(34px,9vw,52px)',
-                  color: '#fff',
-                  lineHeight: 1,
-                }}
-              >
-                Lip Read!
-              </div>
-            </div>
-            <div style={{ fontWeight: 700, color: '#666', fontSize: 14 }}>
-              realtime room play with Convex
-            </div>
-          </div>
-
-          <form
-            onSubmit={onCreate}
-            style={{
-              background: '#fff',
-              borderRadius: 20,
-              border: '3px solid #222',
-              boxShadow: '5px 5px 0 #222',
-              padding: 22,
-              marginBottom: 14,
-              animation: 'slideUp 0.45s 0.05s ease both',
-            }}
-          >
-            <div style={{ fontWeight: 800, fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#888', marginBottom: 8 }}>
-              Your Name
-            </div>
-            <input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              maxLength={24}
-              placeholder="Player name"
-              style={{
-                width: '100%',
-                height: 50,
-                border: '3px solid #222',
-                borderRadius: 14,
-                padding: '0 14px',
-                fontFamily: "'Nunito', sans-serif",
-                fontSize: 15,
-                fontWeight: 700,
-                color: '#222',
-                marginBottom: 12,
-                boxShadow: '3px 3px 0 #222',
-              }}
-            />
-            <button
-              type="submit"
-              disabled={workingAction === 'create'}
-              style={{
-                width: '100%',
-                height: 52,
-                background: CARD_COLORS[0],
-                color: '#fff',
-                border: '3px solid #222',
-                borderRadius: 14,
-                fontFamily: "'Fredoka One', sans-serif",
-                fontSize: 20,
-                boxShadow: '4px 4px 0 #222',
-              }}
-            >
-              {workingAction === 'create' ? 'Creating…' : 'Create Room'}
-            </button>
-          </form>
-
-          <form
-            onSubmit={onJoin}
-            style={{ display: 'flex', gap: 10, animation: 'slideUp 0.45s 0.12s ease both' }}
-          >
-            <input
-              value={roomInput}
-              onChange={(event) => setRoomInput(normalizeCode(event.target.value))}
-              maxLength={8}
-              placeholder="enter room code…"
-              style={{
-                flex: 1,
-                height: 52,
-                border: '3px solid #222',
-                borderRadius: 14,
-                fontFamily: "'Nunito', sans-serif",
-                fontWeight: 800,
-                fontSize: 15,
-                padding: '0 14px',
-                color: '#222',
-                background: '#fff',
-                boxShadow: '4px 4px 0 #222',
-              }}
-            />
-            <button
-              type="submit"
-              disabled={workingAction === 'join'}
-              style={{
-                height: 52,
-                padding: '0 22px',
-                background: CARD_COLORS[3],
-                color: '#fff',
-                border: '3px solid #222',
-                borderRadius: 14,
-                fontFamily: "'Fredoka One', sans-serif",
-                fontSize: 18,
-                boxShadow: '4px 4px 0 #222',
-              }}
-            >
-              {workingAction === 'join' ? '…' : 'Join!'}
-            </button>
-          </form>
-
-          {feedback ? (
-            <p style={{ marginTop: 12, marginBottom: 0, color: '#B42318', fontWeight: 700 }}>
-              {feedback}
-            </p>
-          ) : null}
-        </div>
+        <CombinedEntryPanel
+          name={name}
+          roomInput={roomInput}
+          roomCode={hasInvite ? roomCode : ''}
+          inviteUrl={inviteUrl}
+          inviteQrValue={inviteQrValue}
+          feedback={feedback}
+          joinedName={joinedName}
+          inviteStatus={inviteStatus}
+          playersCount={Math.max(players.length, 1)}
+          workingAction={workingAction}
+          nameChangesApplyNextTime={nameChangesApplyNextTime}
+          onNameChange={setName}
+          onRoomInputChange={setRoomInput}
+          onCreateSubmit={onCreateSubmit}
+          onJoinSubmit={onJoinSubmit}
+          onLeaveRoom={onLeaveRoom}
+        />
 
         {showCardsPanel ? (
           <div
@@ -988,8 +1236,6 @@ function LipReadGame() {
       </div>
     )
   }
-
-  const loadingRoom = state === undefined
 
   return (
     <div style={pageStyle}>

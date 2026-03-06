@@ -10,6 +10,7 @@
 
 import type * as health from "../health.js";
 import type * as lipReading from "../lipReading.js";
+import type * as wantWillWont from "../wantWillWont.js";
 
 import type {
   ApiFromModules,
@@ -20,6 +21,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   health: typeof health;
   lipReading: typeof lipReading;
+  wantWillWont: typeof wantWillWont;
 }>;
 
 /**

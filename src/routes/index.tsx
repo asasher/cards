@@ -881,6 +881,7 @@ export function WWWSwipeActionCard({
           return
         }
 
+        event.preventDefault()
         pointerStart.current = {
           pointerId: event.pointerId,
           clientX: event.clientX,
@@ -895,6 +896,7 @@ export function WWWSwipeActionCard({
           return
         }
 
+        event.preventDefault()
         setDragOffset({
           x: event.clientX - start.clientX,
           y: event.clientY - start.clientY,
@@ -904,7 +906,16 @@ export function WWWSwipeActionCard({
         commitSwipe(event.pointerId, event.clientX, event.clientY)
         releasePointer(event.currentTarget, event.pointerId)
       }}
-      style={{ width: '100%', cursor: canSwipe ? (isDragging ? 'grabbing' : 'grab') : 'default', touchAction: canSwipe ? 'none' : 'auto', display: 'flex', justifyContent: 'center' }}
+      style={{
+        width: '100%',
+        cursor: canSwipe ? (isDragging ? 'grabbing' : 'grab') : 'default',
+        touchAction: canSwipe ? 'none' : 'auto',
+        userSelect: canSwipe ? 'none' : 'text',
+        WebkitUserSelect: canSwipe ? 'none' : 'text',
+        WebkitTouchCallout: canSwipe ? 'none' : 'default',
+        display: 'flex',
+        justifyContent: 'center',
+      }}
     >
       <WWWSwipeCardFace
         activeCardId={activeCardId}

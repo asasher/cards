@@ -12,6 +12,7 @@ export const Route = createFileRoute('/')({ ssr: false, component: ManyCardsHome
 
 const PLAYER_TOKEN_STORAGE_KEY = 'cards.lipread.playerToken'
 const LIP_ROOM_STORAGE_KEY = 'cards.lip.room'
+const SELECTED_GAME_STORAGE_KEY = 'cards.selectedGame'
 const GAME_QUERY_PARAM = 'game'
 const JOIN_QUERY_PARAM = 'join'
 const LEGACY_ROOM_QUERY_PARAM = 'room'
@@ -65,6 +66,10 @@ function em(error: unknown) {
 
 type GK = 'lip-reading' | 'want-will-wont'
 
+function isGameKey(value: string | null): value is GK {
+  return value === 'lip-reading' || value === 'want-will-wont'
+}
+
 export function resolveInitialRoomInput(
   storageGet: (key: string) => string | null = sg,
   locationSearch = typeof window === 'undefined' ? '' : window.location.search,
@@ -80,8 +85,22 @@ export function resolveInitialRoomInput(
   return storageGet(LIP_ROOM_STORAGE_KEY) ?? ''
 }
 
+export function resolveInitialGame(
+  storageGet: (key: string) => string | null = sg,
+  locationSearch = typeof window === 'undefined' ? '' : window.location.search,
+) {
+  const searchGame = new URLSearchParams(locationSearch).get(GAME_QUERY_PARAM)
+  if (isGameKey(searchGame)) {
+    return searchGame
+  }
+
+  const storedGame = storageGet(SELECTED_GAME_STORAGE_KEY)
+  return isGameKey(storedGame) ? storedGame : null
+}
+
 export function buildInviteUrl(
   code: string,
+  game: GK = 'lip-reading',
   currentLocation: Pick<Location, 'href'> | null =
     typeof window === 'undefined' ? null : window.location,
 ) {
@@ -91,12 +110,12 @@ export function buildInviteUrl(
   }
 
   if (!currentLocation) {
-    return `/?${JOIN_QUERY_PARAM}=${normalizedCode}&${GAME_QUERY_PARAM}=lip-reading`
+    return `/?${JOIN_QUERY_PARAM}=${normalizedCode}&${GAME_QUERY_PARAM}=${game}`
   }
 
   const inviteUrl = new URL(currentLocation.href)
   inviteUrl.searchParams.set(JOIN_QUERY_PARAM, normalizedCode)
-  inviteUrl.searchParams.set(GAME_QUERY_PARAM, 'lip-reading')
+  inviteUrl.searchParams.set(GAME_QUERY_PARAM, game)
   return inviteUrl.toString()
 }
 
@@ -115,6 +134,7 @@ const S = {
 
 const ease = 'cubic-bezier(0.16, 1, 0.3, 1)'
 const easeOut = 'cubic-bezier(0.25, 0, 0, 1)'
+const WWW_SWIPE_THRESHOLD = 48
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=DM+Mono:wght@300;400;500&display=swap');
@@ -181,13 +201,9 @@ function ManyCardsHome() {
 function AppRoot() {
   const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams()
   const urlJoin = norm(params.get('join') ?? '')
-  const urlGame = params.get('game') ?? ''
+  const urlGame = params.get(GAME_QUERY_PARAM) ?? ''
 
-  const [game, setGame] = useState<GK | null>(() => {
-    if (urlGame === 'lip-reading' || urlGame === 'want-will-wont') return urlGame
-    const g = sg('cards.selectedGame')
-    return (g === 'lip-reading' || g === 'want-will-wont') ? g : null
-  })
+  const [game, setGame] = useState<GK | null>(() => resolveInitialGame())
 
   // Strip URL params after reading so they don't persist on reload
   useEffect(() => {
@@ -198,7 +214,7 @@ function AppRoot() {
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { game ? ss('cards.selectedGame', game) : sd('cards.selectedGame') }, [game])
+  useEffect(() => { game ? ss(SELECTED_GAME_STORAGE_KEY, game) : sd(SELECTED_GAME_STORAGE_KEY) }, [game])
   if (!game) return <Home onSelect={setGame} />
   if (game === 'want-will-wont') return <WWWGame onBack={() => setGame(null)} joinCode={urlJoin} />
   return <LipGame onBack={() => setGame(null)} joinCode={urlJoin} />
@@ -398,13 +414,11 @@ function Shell({ title, subtitle, onBack, onExit, children }: { title: string; s
 
 // ── QR INVITE ────────────────────────────────────────────────────────────────
 function QRInvite({ code, game }: { code: string; game: GK }) {
-  const url = typeof window !== 'undefined'
-    ? `${window.location.origin}/?join=${code}&game=${game}`
-    : ''
+  const inviteUrl = buildInviteUrl(code, game)
   return (
     <div className="aScale" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20 }}>
       <div style={{ padding: 16, background: S.surface, borderRadius: 12, border: `1px solid ${S.line}`, boxShadow: '0 4px 24px rgba(0,0,0,0.06)' }}>
-        <QRCodeSVG value={url} size={180} bgColor={S.surface} fgColor={S.ink} level="M" />
+        <QRCodeSVG value={inviteUrl || code} size={180} bgColor={S.surface} fgColor={S.ink} level="M" />
       </div>
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: S.muted, marginBottom: 6 }}>
@@ -412,6 +426,16 @@ function QRInvite({ code, game }: { code: string; game: GK }) {
         </div>
         <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 28, letterSpacing: '0.08em', color: S.ink }}>{code}</div>
       </div>
+      {inviteUrl ? (
+        <div style={{ maxWidth: 320, textAlign: 'center' }}>
+          <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, lineHeight: 1.7, color: S.muted, marginBottom: 8 }}>
+            Scan this QR or open the share link on another phone to join the same room.
+          </div>
+          <a href={inviteUrl} aria-label="Join room via share link" style={{ display: 'block', fontFamily: "'DM Mono',monospace", fontSize: 11, lineHeight: 1.7, color: S.accent, wordBreak: 'break-word' }}>
+            {inviteUrl}
+          </a>
+        </div>
+      ) : null}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <WaitingDots />
         <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, letterSpacing: '0.1em', color: S.muted }}>Waiting for partner</span>
@@ -593,6 +617,122 @@ function JoinEntry({ name, setName, joinCode, working, feedback, onJoin }: {
 }
 
 // ── WANT/WILL/WON'T ───────────────────────────────────────────────────────────
+export type WWWSwipeDecision = 'want' | 'will' | 'wont'
+
+export function resolveWWWSwipeDecision(
+  deltaX: number,
+  deltaY: number,
+  threshold = WWW_SWIPE_THRESHOLD,
+): WWWSwipeDecision | null {
+  const absX = Math.abs(deltaX)
+  const absY = Math.abs(deltaY)
+
+  if (absX < threshold && absY < threshold) {
+    return null
+  }
+
+  if (absY > absX) {
+    return deltaY <= -threshold ? 'want' : null
+  }
+
+  if (deltaX <= -threshold) {
+    return 'wont'
+  }
+
+  if (deltaX >= threshold) {
+    return 'will'
+  }
+
+  return null
+}
+
+export function resolveWWWSwipeSubmission(
+  canSwipe: boolean,
+  deltaX: number,
+  deltaY: number,
+  threshold = WWW_SWIPE_THRESHOLD,
+): WWWSwipeDecision | null {
+  if (!canSwipe) {
+    return null
+  }
+
+  return resolveWWWSwipeDecision(deltaX, deltaY, threshold)
+}
+
+export function WWWSwipeActionCard({
+  activeCardId,
+  activeCardText,
+  canSwipe,
+  onDecision,
+}: {
+  activeCardId: string
+  activeCardText: string
+  canSwipe: boolean
+  onDecision: (decision: WWWSwipeDecision) => void
+}) {
+  const pointerStart = useRef<{ pointerId: number; clientX: number; clientY: number } | null>(null)
+
+  const clearPointer = () => {
+    pointerStart.current = null
+  }
+
+  const releasePointer = (element: HTMLDivElement, pointerId: number) => {
+    if (element.hasPointerCapture?.(pointerId)) {
+      element.releasePointerCapture?.(pointerId)
+    }
+  }
+
+  const commitSwipe = (pointerId: number, clientX: number, clientY: number) => {
+    const start = pointerStart.current
+    if (!start || start.pointerId !== pointerId) {
+      return
+    }
+
+    clearPointer()
+
+    const decision = resolveWWWSwipeSubmission(canSwipe, clientX - start.clientX, clientY - start.clientY)
+    if (decision) {
+      onDecision(decision)
+    }
+  }
+
+  return (
+    <div
+      aria-disabled={!canSwipe}
+      aria-label="Swipe activity card"
+      onLostPointerCapture={clearPointer}
+      onPointerCancel={(event) => {
+        clearPointer()
+        releasePointer(event.currentTarget, event.pointerId)
+      }}
+      onPointerDown={(event) => {
+        if (!canSwipe) {
+          return
+        }
+
+        pointerStart.current = {
+          pointerId: event.pointerId,
+          clientX: event.clientX,
+          clientY: event.clientY,
+        }
+        event.currentTarget.setPointerCapture?.(event.pointerId)
+      }}
+      onPointerUp={(event) => {
+        commitSwipe(event.pointerId, event.clientX, event.clientY)
+        releasePointer(event.currentTarget, event.pointerId)
+      }}
+      style={{ width: '100%', cursor: canSwipe ? 'grab' : 'default', touchAction: canSwipe ? 'none' : 'auto' }}
+    >
+      <div className="aScale" key={activeCardId}>
+        <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: S.dim, marginBottom: 20 }}>Activity card</div>
+        <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 'clamp(24px,5vw,48px)', lineHeight: 1.2, color: S.ink, maxWidth: 420 }}>
+          {activeCardText}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function WWWGame({ onBack, joinCode = '' }: { onBack: () => void; joinCode?: string }) {
   const [token] = useState(getToken)
   const [name, setName] = useState(() => sg('cards.name') ?? '')
@@ -625,8 +765,14 @@ function WWWGame({ onBack, joinCode = '' }: { onBack: () => void; joinCode?: str
 
   const onLeave = () => { const c = code; setActiveCode(''); sd('cards.www.room'); if (c) void leaveSession({ code: c, playerToken: token }).catch(() => {}) }
 
-  const onSwipe = async (decision: 'want' | 'will' | 'wont') => {
-    if (!code || !state?.activeCardId) return
+  const me = state?.me
+  const other = state?.players.find(p => !p.isMe) ?? null
+  const canAct = !!state && !!me && !me.done && !!state.activeCardId
+  const canSubmitDecision = canAct && !working
+  const playerCount = state?.players?.length ?? 0
+
+  const onSwipe = async (decision: WWWSwipeDecision) => {
+    if (!code || !state?.activeCardId || !canSubmitDecision) return
     const cardText = state.activeCardText ?? ''
     setWorking(true)
     try {
@@ -637,11 +783,6 @@ function WWWGame({ onBack, joinCode = '' }: { onBack: () => void; joinCode?: str
       }
     } catch (e) { setFeedback(em(e)) } finally { setWorking(false) }
   }
-
-  const me = state?.me
-  const other = state?.players.find(p => !p.isMe) ?? null
-  const canSwipe = !!state && !!me && !me.done && !!state.activeCardId
-  const playerCount = state?.players?.length ?? 0
 
   // ── No room yet: host entry or joiner entry ──
   if (!code) {
@@ -716,17 +857,17 @@ function WWWGame({ onBack, joinCode = '' }: { onBack: () => void; joinCode?: str
                 : <WaitingDots />}
             </div>
           ) : (
-            <div className="aScale" key={state.activeCardId as string}>
-              <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: S.dim, marginBottom: 20 }}>Activity card</div>
-              <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 'clamp(24px,5vw,48px)', lineHeight: 1.2, color: S.ink, maxWidth: 420 }}>
-                {state.activeCardText ?? 'Stand by...'}
-              </div>
-            </div>
+            <WWWSwipeActionCard
+              activeCardId={String(state.activeCardId)}
+              activeCardText={state.activeCardText ?? 'Stand by...'}
+              canSwipe={canSubmitDecision}
+              onDecision={(decision) => { void onSwipe(decision) }}
+            />
           )}
       </Card>
 
       {/* Gesture legend — shown only during active swiping */}
-      {!me?.done && canSwipe && (
+      {!me?.done && canAct && (
         <div className="aFade" style={{ display: 'flex', gap: 0, overflow: 'hidden', borderRadius: 12, border: `1px solid ${S.line}`, marginBottom: 12 }}>
           {[['←', "Won't", 0], ['↑', 'Want', 1], ['→', 'Will', 2]].map(([dir, label, i]) => (
             <div key={String(label)} style={{ flex: 1, padding: '12px', borderRight: Number(i) < 2 ? `1px solid ${S.line}` : 'none', textAlign: 'center' }}>
@@ -760,7 +901,7 @@ function WWWGame({ onBack, joinCode = '' }: { onBack: () => void; joinCode?: str
             { d: 'want' as const, label: 'Want', dir: '↑', bg: S.accentLight, color: S.accent },
             { d: 'will' as const, label: 'Will', dir: '→', bg: S.soft, color: S.ink },
           ].map(({ d, label, dir, bg, color }) => (
-            <button key={d} className="swipebtn" disabled={!canSwipe || working} onClick={() => void onSwipe(d)} style={{
+            <button key={d} className="swipebtn" disabled={!canSubmitDecision} onClick={() => void onSwipe(d)} style={{
               height: 72, background: bg, color, border: `1px solid ${color === S.accent ? S.accentSoft : S.line}`, borderRadius: 12,
               display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 5,
             }}>
@@ -873,7 +1014,7 @@ function LipGame({ onBack, joinCode = '' }: { onBack: () => void; joinCode?: str
   const isMyTurn = sess?.turnToken === token
   const timeLeft = sess?.roundEndsAt ? Math.max(0, Math.ceil((sess.roundEndsAt - now) / 1000)) : null
   const urgent = timeLeft !== null && timeLeft <= 10
-  const inviteUrl = useMemo(() => buildInviteUrl(code), [code])
+  const inviteUrl = useMemo(() => buildInviteUrl(code, 'lip-reading'), [code])
   const showCombinedEntryScreen = !code || players.length < 2
   const joinedName = state?.me?.name ?? name.trim()
   const inviteStatus = players.length === 0 ? 'Setting up room' : 'Waiting for player 2'

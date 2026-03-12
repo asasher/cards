@@ -698,6 +698,7 @@ export function getWWWSwipeFeedback(
   const previewDecision = resolveWWWSwipePreviewDecision(deltaX, deltaY)
   const committedDecision = resolveWWWSwipeDecision(deltaX, deltaY, threshold)
   const dominantDistance = previewDecision === 'want' ? Math.abs(Math.min(deltaY, 0)) : Math.abs(deltaX)
+  const progress = clamp(dominantDistance / threshold, 0, 1)
 
   return {
     previewDecision,
@@ -710,10 +711,12 @@ export function getWWWSwipeFeedback(
           : previewDecision === 'will'
             ? '→ Will'
             : null,
-    progress: clamp(dominantDistance / threshold, 0, 1),
+    progress,
     translateX: clamp(deltaX, -84, 84),
     translateY: clamp(deltaY, -84, 24),
     rotate: clamp(deltaX / 10, -10, 10),
+    scale: 1 - progress * 0.04,
+    opacity: 1 - progress * 0.06,
   }
 }
 
@@ -848,8 +851,10 @@ export function WWWSwipeActionCard({
         border: `1px solid ${previewOption ? (previewOption.color === S.accent ? S.accentSoft : S.line) : S.line}`,
         background: previewOption ? previewOption.background : S.surface,
         boxShadow: isDragging ? `0 ${18 + dragFeedback.progress * 8}px ${36 + dragFeedback.progress * 12}px rgba(0,0,0,${0.1 + dragFeedback.progress * 0.08})` : '0 8px 24px rgba(0,0,0,0.05)',
-        transform: `translate3d(${dragFeedback.translateX}px, ${dragFeedback.translateY}px, 0) rotate(${dragFeedback.rotate}deg)`,
-        transition: isDragging ? 'none' : `transform 0.22s ${ease}, box-shadow 0.22s ease, background 0.22s ease, border-color 0.22s ease`,
+        transform: `translate3d(${dragFeedback.translateX}px, ${dragFeedback.translateY}px, 0) rotate(${dragFeedback.rotate}deg) scale(${dragFeedback.scale})`,
+        opacity: dragFeedback.opacity,
+        willChange: canSwipe ? 'transform, box-shadow, background, border-color, opacity' : undefined,
+        transition: isDragging ? 'none' : `transform 0.22s ${ease}, box-shadow 0.22s ease, background 0.22s ease, border-color 0.22s ease, opacity 0.22s ease`,
         position: 'relative',
       }}>
         {dragFeedback.cue && (

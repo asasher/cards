@@ -109,7 +109,23 @@ describe('getWWWSwipeFeedback', () => {
       translateX: -84,
       translateY: 10,
       rotate: -10,
+      scale: 0.96,
+      opacity: 0.94,
     })
+  })
+
+  it('shows upward pre-submit feedback before the full swipe threshold', () => {
+    const feedback = getWWWSwipeFeedback(0, -20)
+
+    expect(feedback.previewDecision).toBe('want')
+    expect(feedback.committedDecision).toBeNull()
+    expect(feedback.cue).toBe('↑ Want')
+    expect(feedback.translateX).toBe(0)
+    expect(feedback.translateY).toBe(-20)
+    expect(feedback.rotate).toBe(0)
+    expect(feedback.progress).toBeCloseTo(20 / 48)
+    expect(feedback.scale).toBeCloseTo(1 - (20 / 48) * 0.04)
+    expect(feedback.opacity).toBeCloseTo(1 - (20 / 48) * 0.06)
   })
 })
 

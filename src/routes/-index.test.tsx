@@ -100,15 +100,15 @@ describe('resolveWWWSwipePreviewDecision', () => {
 })
 
 describe('getWWWSwipeFeedback', () => {
-  it('returns a visible cue and bounded transform values for drag feedback', () => {
+  it('tracks the drag offset while keeping the swipe cue and submission mapping', () => {
     expect(getWWWSwipeFeedback(-120, 10)).toEqual({
       previewDecision: 'wont',
       committedDecision: 'wont',
       cue: "← Won't",
       progress: 1,
-      translateX: -84,
+      translateX: -120,
       translateY: 10,
-      rotate: -10,
+      rotate: -13.333333333333334,
       scale: 0.96,
       opacity: 0.94,
     })
@@ -126,6 +126,14 @@ describe('getWWWSwipeFeedback', () => {
     expect(feedback.progress).toBeCloseTo(20 / 48)
     expect(feedback.scale).toBeCloseTo(1 - (20 / 48) * 0.04)
     expect(feedback.opacity).toBeCloseTo(1 - (20 / 48) * 0.06)
+  })
+
+  it('only clamps extremely large drags so the card can visibly follow the pointer', () => {
+    const feedback = getWWWSwipeFeedback(220, -220)
+
+    expect(feedback.translateX).toBe(160)
+    expect(feedback.translateY).toBe(-160)
+    expect(feedback.rotate).toBe(14)
   })
 })
 

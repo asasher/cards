@@ -712,9 +712,9 @@ export function getWWWSwipeFeedback(
             ? '→ Will'
             : null,
     progress,
-    translateX: clamp(deltaX, -84, 84),
-    translateY: clamp(deltaY, -84, 24),
-    rotate: clamp(deltaX / 10, -10, 10),
+    translateX: clamp(deltaX, -160, 160),
+    translateY: clamp(deltaY, -160, 72),
+    rotate: clamp(deltaX / 9, -14, 14),
     scale: 1 - progress * 0.04,
     opacity: 1 - progress * 0.06,
   }

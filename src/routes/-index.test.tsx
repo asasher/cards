@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
+import React from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   WWWDecisionControls,
+  WWWSwipeCardFace,
   buildInviteUrl,
   getWWWSwipeFeedback,
   resolveInitialGame,
@@ -131,9 +133,16 @@ describe('getWWWSwipeFeedback', () => {
   it('only clamps extremely large drags so the card can visibly follow the pointer', () => {
     const feedback = getWWWSwipeFeedback(220, -220)
 
-    expect(feedback.translateX).toBe(160)
-    expect(feedback.translateY).toBe(-160)
+    expect(feedback.translateX).toBe(220)
+    expect(feedback.translateY).toBe(-220)
     expect(feedback.rotate).toBe(14)
+  })
+
+  it('applies soft resistance only after very large drags', () => {
+    const feedback = getWWWSwipeFeedback(320, -320)
+
+    expect(feedback.translateX).toBeCloseTo(255)
+    expect(feedback.translateY).toBeCloseTo(-255)
   })
 })
 
@@ -150,5 +159,65 @@ describe('WWWDecisionControls', () => {
     fireEvent.click(screen.getByRole('button', { name: /won't/i }))
 
     expect(onDecision).toHaveBeenCalledWith('wont')
+  })
+})
+
+class PointerDragHarness extends React.Component<
+  Record<string, never>,
+  { dragOffset: { x: number; y: number } }
+> {
+  pointerStart: { pointerId: number; clientX: number; clientY: number } | null = null
+
+  state = {
+    dragOffset: { x: 0, y: 0 },
+  }
+
+  render() {
+    const dragFeedback = getWWWSwipeFeedback(this.state.dragOffset.x, this.state.dragOffset.y)
+    const isDragging = this.state.dragOffset.x !== 0 || this.state.dragOffset.y !== 0
+
+    return (
+      <div
+        aria-label="Swipe activity card"
+        onPointerDown={(event: React.PointerEvent<HTMLDivElement>) => {
+          this.pointerStart = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY }
+          this.setState({ dragOffset: { x: 0, y: 0 } })
+        }}
+        onPointerMove={(event: React.PointerEvent<HTMLDivElement>) => {
+          const start = this.pointerStart
+          if (!start || start.pointerId !== event.pointerId) {
+            return
+          }
+
+          this.setState({ dragOffset: { x: event.clientX - start.clientX, y: event.clientY - start.clientY } })
+        }}
+        onPointerUp={() => {
+          this.pointerStart = null
+          this.setState({ dragOffset: { x: 0, y: 0 } })
+        }}
+      >
+        <WWWSwipeCardFace activeCardId="demo-card" activeCardText="Go dancing" canSwipe dragFeedback={dragFeedback} isDragging={isDragging} />
+      </div>
+    )
+  }
+}
+
+describe('WWWSwipeCardFace', () => {
+  it('changes the rendered transform while the pointer drag moves', () => {
+    render(<PointerDragHarness />)
+
+    const target = screen.getByLabelText('Swipe activity card')
+    const face = target.firstElementChild as HTMLDivElement
+
+    expect(face.style.transform).toContain('translate3d(0px, 0px, 0)')
+
+    fireEvent.pointerDown(target, { pointerId: 1, clientX: 100, clientY: 120 })
+    fireEvent.pointerMove(target, { pointerId: 1, clientX: 160, clientY: 84 })
+
+    expect(face.style.transform).toContain('translate3d(60px, -36px, 0)')
+
+    fireEvent.pointerUp(target, { pointerId: 1, clientX: 160, clientY: 84 })
+
+    expect(face.style.transform).toContain('translate3d(0px, 0px, 0)')
   })
 })

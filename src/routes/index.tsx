@@ -663,6 +663,14 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
+function softClamp(value: number, limit: number, overshootFactor = 0.35) {
+  if (Math.abs(value) <= limit) {
+    return value
+  }
+
+  return Math.sign(value) * (limit + (Math.abs(value) - limit) * overshootFactor)
+}
+
 export function resolveWWWSwipePreviewDecision(
   deltaX: number,
   deltaY: number,
@@ -712,8 +720,8 @@ export function getWWWSwipeFeedback(
             ? '→ Will'
             : null,
     progress,
-    translateX: clamp(deltaX, -160, 160),
-    translateY: clamp(deltaY, -160, 72),
+    translateX: softClamp(deltaX, 220),
+    translateY: deltaY < 0 ? softClamp(deltaY, 220) : softClamp(deltaY, 96, 0.25),
     rotate: clamp(deltaX / 9, -14, 14),
     scale: 1 - progress * 0.04,
     opacity: 1 - progress * 0.06,
@@ -762,6 +770,61 @@ export function WWWDecisionControls({
   )
 }
 
+export function WWWSwipeCardFace({
+  activeCardId,
+  activeCardText,
+  canSwipe,
+  dragFeedback,
+  isDragging,
+}: {
+  activeCardId: string
+  activeCardText: string
+  canSwipe: boolean
+  dragFeedback: ReturnType<typeof getWWWSwipeFeedback>
+  isDragging: boolean
+}) {
+  const previewOption = WWW_DECISION_OPTIONS.find(option => option.decision === dragFeedback.previewDecision) ?? null
+
+  return (
+    <div className="aScale" key={activeCardId} style={{
+      width: '100%',
+      maxWidth: 520,
+      padding: '32px 28px',
+      borderRadius: 18,
+      border: `1px solid ${previewOption ? (previewOption.color === S.accent ? S.accentSoft : S.line) : S.line}`,
+      background: previewOption ? previewOption.background : S.surface,
+      boxShadow: isDragging ? `0 ${18 + dragFeedback.progress * 8}px ${36 + dragFeedback.progress * 12}px rgba(0,0,0,${0.1 + dragFeedback.progress * 0.08})` : '0 8px 24px rgba(0,0,0,0.05)',
+      transform: `translate3d(${dragFeedback.translateX}px, ${dragFeedback.translateY}px, 0) rotate(${dragFeedback.rotate}deg) scale(${dragFeedback.scale})`,
+      opacity: dragFeedback.opacity,
+      willChange: canSwipe ? 'transform, box-shadow, background, border-color, opacity' : undefined,
+      transition: isDragging ? 'none' : `transform 0.22s ${ease}, box-shadow 0.22s ease, background 0.22s ease, border-color 0.22s ease, opacity 0.22s ease`,
+      position: 'relative',
+    }}>
+      {dragFeedback.cue && (
+        <div className="aFade" style={{
+          position: 'absolute',
+          top: 14,
+          right: 14,
+          padding: '6px 10px',
+          borderRadius: 999,
+          background: S.surface,
+          border: `1px solid ${previewOption?.color === S.accent ? S.accentSoft : S.line}`,
+          fontFamily: "'DM Mono',monospace",
+          fontSize: 10,
+          letterSpacing: '0.08em',
+          color: previewOption?.color ?? S.muted,
+        }}>
+          {dragFeedback.cue}
+        </div>
+      )}
+      <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: S.dim, marginBottom: 20 }}>Activity card</div>
+      <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 'clamp(24px,5vw,48px)', lineHeight: 1.2, color: S.ink, maxWidth: 420 }}>
+        {activeCardText}
+      </div>
+    </div>
+  )
+}
+
 export function WWWSwipeActionCard({
   activeCardId,
   activeCardText,
@@ -777,7 +840,6 @@ export function WWWSwipeActionCard({
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
   const dragFeedback = getWWWSwipeFeedback(dragOffset.x, dragOffset.y)
   const isDragging = dragOffset.x !== 0 || dragOffset.y !== 0
-  const previewOption = WWW_DECISION_OPTIONS.find(option => option.decision === dragFeedback.previewDecision) ?? null
 
   const clearPointer = () => {
     pointerStart.current = null
@@ -843,42 +905,13 @@ export function WWWSwipeActionCard({
       }}
       style={{ width: '100%', cursor: canSwipe ? (isDragging ? 'grabbing' : 'grab') : 'default', touchAction: canSwipe ? 'none' : 'auto', display: 'flex', justifyContent: 'center' }}
     >
-      <div className="aScale" key={activeCardId} style={{
-        width: '100%',
-        maxWidth: 520,
-        padding: '32px 28px',
-        borderRadius: 18,
-        border: `1px solid ${previewOption ? (previewOption.color === S.accent ? S.accentSoft : S.line) : S.line}`,
-        background: previewOption ? previewOption.background : S.surface,
-        boxShadow: isDragging ? `0 ${18 + dragFeedback.progress * 8}px ${36 + dragFeedback.progress * 12}px rgba(0,0,0,${0.1 + dragFeedback.progress * 0.08})` : '0 8px 24px rgba(0,0,0,0.05)',
-        transform: `translate3d(${dragFeedback.translateX}px, ${dragFeedback.translateY}px, 0) rotate(${dragFeedback.rotate}deg) scale(${dragFeedback.scale})`,
-        opacity: dragFeedback.opacity,
-        willChange: canSwipe ? 'transform, box-shadow, background, border-color, opacity' : undefined,
-        transition: isDragging ? 'none' : `transform 0.22s ${ease}, box-shadow 0.22s ease, background 0.22s ease, border-color 0.22s ease, opacity 0.22s ease`,
-        position: 'relative',
-      }}>
-        {dragFeedback.cue && (
-          <div className="aFade" style={{
-            position: 'absolute',
-            top: 14,
-            right: 14,
-            padding: '6px 10px',
-            borderRadius: 999,
-            background: S.surface,
-            border: `1px solid ${previewOption?.color === S.accent ? S.accentSoft : S.line}`,
-            fontFamily: "'DM Mono',monospace",
-            fontSize: 10,
-            letterSpacing: '0.08em',
-            color: previewOption?.color ?? S.muted,
-          }}>
-            {dragFeedback.cue}
-          </div>
-        )}
-        <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: S.dim, marginBottom: 20 }}>Activity card</div>
-        <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 'clamp(24px,5vw,48px)', lineHeight: 1.2, color: S.ink, maxWidth: 420 }}>
-          {activeCardText}
-        </div>
-      </div>
+      <WWWSwipeCardFace
+        activeCardId={activeCardId}
+        activeCardText={activeCardText}
+        canSwipe={canSwipe}
+        dragFeedback={dragFeedback}
+        isDragging={isDragging}
+      />
     </div>
   )
 }

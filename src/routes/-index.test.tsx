@@ -203,11 +203,16 @@ class PointerDragHarness extends React.Component<
 }
 
 describe('WWWSwipeCardFace', () => {
-  it('changes the rendered transform while the pointer drag moves', () => {
+  it('keeps the scale animation on a wrapper while the inner card visibly translates during drag', () => {
     render(<PointerDragHarness />)
 
     const target = screen.getByLabelText('Swipe activity card')
-    const face = target.firstElementChild as HTMLDivElement
+    const animatedWrapper = target.firstElementChild as HTMLDivElement
+    const face = animatedWrapper.firstElementChild as HTMLDivElement
+
+    expect(animatedWrapper).toBeTruthy()
+    expect(animatedWrapper.className).toContain('aScale')
+    expect(animatedWrapper.style.transform).toBe('')
 
     expect(face.style.transform).toContain('translate3d(0px, 0px, 0)')
 

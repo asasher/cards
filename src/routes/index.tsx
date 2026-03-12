@@ -786,40 +786,41 @@ export function WWWSwipeCardFace({
   const previewOption = WWW_DECISION_OPTIONS.find(option => option.decision === dragFeedback.previewDecision) ?? null
 
   return (
-    <div className="aScale" key={activeCardId} style={{
-      width: '100%',
-      maxWidth: 520,
-      padding: '32px 28px',
-      borderRadius: 18,
-      border: `1px solid ${previewOption ? (previewOption.color === S.accent ? S.accentSoft : S.line) : S.line}`,
-      background: previewOption ? previewOption.background : S.surface,
-      boxShadow: isDragging ? `0 ${18 + dragFeedback.progress * 8}px ${36 + dragFeedback.progress * 12}px rgba(0,0,0,${0.1 + dragFeedback.progress * 0.08})` : '0 8px 24px rgba(0,0,0,0.05)',
-      transform: `translate3d(${dragFeedback.translateX}px, ${dragFeedback.translateY}px, 0) rotate(${dragFeedback.rotate}deg) scale(${dragFeedback.scale})`,
-      opacity: dragFeedback.opacity,
-      willChange: canSwipe ? 'transform, box-shadow, background, border-color, opacity' : undefined,
-      transition: isDragging ? 'none' : `transform 0.22s ${ease}, box-shadow 0.22s ease, background 0.22s ease, border-color 0.22s ease, opacity 0.22s ease`,
-      position: 'relative',
-    }}>
-      {dragFeedback.cue && (
-        <div className="aFade" style={{
-          position: 'absolute',
-          top: 14,
-          right: 14,
-          padding: '6px 10px',
-          borderRadius: 999,
-          background: S.surface,
-          border: `1px solid ${previewOption?.color === S.accent ? S.accentSoft : S.line}`,
-          fontFamily: "'DM Mono',monospace",
-          fontSize: 10,
-          letterSpacing: '0.08em',
-          color: previewOption?.color ?? S.muted,
-        }}>
-          {dragFeedback.cue}
+    <div className="aScale" key={activeCardId} style={{ width: '100%', maxWidth: 520 }}>
+      <div style={{
+        width: '100%',
+        padding: '32px 28px',
+        borderRadius: 18,
+        border: `1px solid ${previewOption ? (previewOption.color === S.accent ? S.accentSoft : S.line) : S.line}`,
+        background: previewOption ? previewOption.background : S.surface,
+        boxShadow: isDragging ? `0 ${18 + dragFeedback.progress * 8}px ${36 + dragFeedback.progress * 12}px rgba(0,0,0,${0.1 + dragFeedback.progress * 0.08})` : '0 8px 24px rgba(0,0,0,0.05)',
+        transform: `translate3d(${dragFeedback.translateX}px, ${dragFeedback.translateY}px, 0) rotate(${dragFeedback.rotate}deg) scale(${dragFeedback.scale})`,
+        opacity: dragFeedback.opacity,
+        willChange: canSwipe ? 'transform, box-shadow, background, border-color, opacity' : undefined,
+        transition: isDragging ? 'none' : `transform 0.22s ${ease}, box-shadow 0.22s ease, background 0.22s ease, border-color 0.22s ease, opacity 0.22s ease`,
+        position: 'relative',
+      }}>
+        {dragFeedback.cue && (
+          <div className="aFade" style={{
+            position: 'absolute',
+            top: 14,
+            right: 14,
+            padding: '6px 10px',
+            borderRadius: 999,
+            background: S.surface,
+            border: `1px solid ${previewOption?.color === S.accent ? S.accentSoft : S.line}`,
+            fontFamily: "'DM Mono',monospace",
+            fontSize: 10,
+            letterSpacing: '0.08em',
+            color: previewOption?.color ?? S.muted,
+          }}>
+            {dragFeedback.cue}
+          </div>
+        )}
+        <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: S.dim, marginBottom: 20 }}>Activity card</div>
+        <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 'clamp(24px,5vw,48px)', lineHeight: 1.2, color: S.ink, maxWidth: 420 }}>
+          {activeCardText}
         </div>
-      )}
-      <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: S.dim, marginBottom: 20 }}>Activity card</div>
-      <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 'clamp(24px,5vw,48px)', lineHeight: 1.2, color: S.ink, maxWidth: 420 }}>
-        {activeCardText}
       </div>
     </div>
   )

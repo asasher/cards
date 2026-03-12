@@ -1,14 +1,20 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  WWWDecisionControls,
   buildInviteUrl,
   resolveInitialGame,
   resolveInitialRoomInput,
   resolveWWWSwipeDecision,
   resolveWWWSwipeSubmission,
 } from './index'
+
+afterEach(() => {
+  cleanup()
+})
 
 describe('resolveInitialRoomInput', () => {
   it('prefills the room code from the room query parameter', () => {
@@ -75,5 +81,21 @@ describe('resolveWWWSwipeSubmission', () => {
     expect(resolveWWWSwipeSubmission(true, -96, 0)).toBe('wont')
     expect(resolveWWWSwipeSubmission(true, 0, -96)).toBe('want')
     expect(resolveWWWSwipeSubmission(true, 96, 0)).toBe('will')
+  })
+})
+
+describe('WWWDecisionControls', () => {
+  it('shows one swipe-or-tap hint and preserves tap controls', () => {
+    const onDecision = vi.fn()
+
+    render(<WWWDecisionControls canSubmitDecision onDecision={onDecision} showHint working={false} />)
+
+    expect(screen.getByText('Swipe the card, or tap a choice below.')).toBeTruthy()
+    expect(screen.getByRole('group', { name: 'Decision choices' })).toBeTruthy()
+    expect(screen.getAllByRole('button')).toHaveLength(3)
+
+    fireEvent.click(screen.getByRole('button', { name: /won't/i }))
+
+    expect(onDecision).toHaveBeenCalledWith('wont')
   })
 })

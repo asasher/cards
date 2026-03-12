@@ -659,6 +659,48 @@ export function resolveWWWSwipeSubmission(
   return resolveWWWSwipeDecision(deltaX, deltaY, threshold)
 }
 
+const WWW_DECISION_OPTIONS = [
+  { decision: 'wont' as const, label: "Won't", direction: '←', background: S.soft, color: S.ink },
+  { decision: 'want' as const, label: 'Want', direction: '↑', background: S.accentLight, color: S.accent },
+  { decision: 'will' as const, label: 'Will', direction: '→', background: S.soft, color: S.ink },
+]
+
+export function WWWDecisionControls({
+  canSubmitDecision,
+  showHint,
+  working,
+  onDecision,
+}: {
+  canSubmitDecision: boolean
+  showHint: boolean
+  working: boolean
+  onDecision: (decision: WWWSwipeDecision) => void
+}) {
+  return (
+    <div style={{ marginBottom: 20 }} className="a4">
+      {showHint && (
+        <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.08em', color: S.muted, marginBottom: 12, textAlign: 'center' }}>
+          Swipe the card, or tap a choice below.
+        </div>
+      )}
+
+      <div role="group" aria-label="Decision choices" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+        {WWW_DECISION_OPTIONS.map(({ decision, label, direction, background, color }) => (
+          <button key={decision} className="swipebtn" disabled={!canSubmitDecision} onClick={() => onDecision(decision)} style={{
+            height: 72, background, color, border: `1px solid ${color === S.accent ? S.accentSoft : S.line}`, borderRadius: 12,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 5,
+          }}>
+            <span style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 22, fontWeight: 300, lineHeight: 1 }}>{direction}</span>
+            <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+              {working ? '...' : label}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function WWWSwipeActionCard({
   activeCardId,
   activeCardText,
@@ -866,18 +908,6 @@ function WWWGame({ onBack, joinCode = '' }: { onBack: () => void; joinCode?: str
           )}
       </Card>
 
-      {/* Gesture legend — shown only during active swiping */}
-      {!me?.done && canAct && (
-        <div className="aFade" style={{ display: 'flex', gap: 0, overflow: 'hidden', borderRadius: 12, border: `1px solid ${S.line}`, marginBottom: 12 }}>
-          {[['←', "Won't", 0], ['↑', 'Want', 1], ['→', 'Will', 2]].map(([dir, label, i]) => (
-            <div key={String(label)} style={{ flex: 1, padding: '12px', borderRight: Number(i) < 2 ? `1px solid ${S.line}` : 'none', textAlign: 'center' }}>
-              <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 20, color: S.ink }}>{dir}</div>
-              <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: S.muted, marginTop: 3 }}>{label}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
       {/* Outcome toast */}
       {outcome && (
         <div className="aPop" style={{ marginBottom: 16, padding: '16px 20px', borderRadius: 12, background: outcome.match ? '#F0F9F4' : S.soft, border: `1px solid ${outcome.match ? '#C6E8D2' : S.line}`, display: 'flex', alignItems: 'center', gap: 14 }}>
@@ -893,25 +923,14 @@ function WWWGame({ onBack, joinCode = '' }: { onBack: () => void; joinCode?: str
         </div>
       )}
 
-      {/* Swipe buttons */}
+      {/* Decision controls */}
       {!me?.done && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 20 }} className="a4">
-          {[
-            { d: 'wont' as const, label: "Won't", dir: '←', bg: S.soft, color: S.ink },
-            { d: 'want' as const, label: 'Want', dir: '↑', bg: S.accentLight, color: S.accent },
-            { d: 'will' as const, label: 'Will', dir: '→', bg: S.soft, color: S.ink },
-          ].map(({ d, label, dir, bg, color }) => (
-            <button key={d} className="swipebtn" disabled={!canSubmitDecision} onClick={() => void onSwipe(d)} style={{
-              height: 72, background: bg, color, border: `1px solid ${color === S.accent ? S.accentSoft : S.line}`, borderRadius: 12,
-              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 5,
-            }}>
-              <span style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 22, fontWeight: 300, lineHeight: 1 }}>{dir}</span>
-              <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-                {working ? '...' : label}
-              </span>
-            </button>
-          ))}
-        </div>
+        <WWWDecisionControls
+          canSubmitDecision={canSubmitDecision}
+          showHint={canAct}
+          working={working}
+          onDecision={(decision) => { void onSwipe(decision) }}
+        />
       )}
 
       {/* Results log */}

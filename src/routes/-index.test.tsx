@@ -6,9 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   WWWDecisionControls,
   buildInviteUrl,
+  getWWWSwipeFeedback,
   resolveInitialGame,
   resolveInitialRoomInput,
   resolveWWWSwipeDecision,
+  resolveWWWSwipePreviewDecision,
   resolveWWWSwipeSubmission,
 } from './index'
 
@@ -81,6 +83,33 @@ describe('resolveWWWSwipeSubmission', () => {
     expect(resolveWWWSwipeSubmission(true, -96, 0)).toBe('wont')
     expect(resolveWWWSwipeSubmission(true, 0, -96)).toBe('want')
     expect(resolveWWWSwipeSubmission(true, 96, 0)).toBe('will')
+  })
+})
+
+describe('resolveWWWSwipePreviewDecision', () => {
+  it('surfaces the drag direction before the full swipe threshold is reached', () => {
+    expect(resolveWWWSwipePreviewDecision(-18, 2)).toBe('wont')
+    expect(resolveWWWSwipePreviewDecision(4, -18)).toBe('want')
+    expect(resolveWWWSwipePreviewDecision(18, 1)).toBe('will')
+  })
+
+  it('stays neutral for tiny or downward drags', () => {
+    expect(resolveWWWSwipePreviewDecision(4, 3)).toBeNull()
+    expect(resolveWWWSwipePreviewDecision(0, 18)).toBeNull()
+  })
+})
+
+describe('getWWWSwipeFeedback', () => {
+  it('returns a visible cue and bounded transform values for drag feedback', () => {
+    expect(getWWWSwipeFeedback(-120, 10)).toEqual({
+      previewDecision: 'wont',
+      committedDecision: 'wont',
+      cue: "← Won't",
+      progress: 1,
+      translateX: -84,
+      translateY: 10,
+      rotate: -10,
+    })
   })
 })
 

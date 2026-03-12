@@ -1,524 +1,1220 @@
+// ROUTE / — STUDIO: Tasteful minimalist with rich micro-animations
 import { createFileRoute } from '@tanstack/react-router'
 import { ConvexProvider, ConvexReactClient, useMutation, useQuery } from 'convex/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, FormEvent } from 'react'
+import type { CSSProperties } from 'react'
+import { QRCodeSVG } from 'qrcode.react'
+
 import { api } from '../../convex/_generated/api'
-import type { Id } from '../../convex/_generated/dataModel'
+import { persistPlayerName, resolveInitialPlayerName } from '../lib/lipReadName'
 
-export const Route = createFileRoute('/')({
-  ssr: false,
-  component: LipRead,
-})
+export const Route = createFileRoute('/')({ ssr: false, component: ManyCardsHome })
 
-const NAME_STORAGE_KEY = 'cards.lipread.name'
 const PLAYER_TOKEN_STORAGE_KEY = 'cards.lipread.playerToken'
-const ROOM_STORAGE_KEY = 'cards.lipread.roomCode'
-const HEARTBEAT_INTERVAL_MS = 8_000
+const LIP_ROOM_STORAGE_KEY = 'cards.lip.room'
+const SELECTED_GAME_STORAGE_KEY = 'cards.selectedGame'
+const GAME_QUERY_PARAM = 'game'
+const JOIN_QUERY_PARAM = 'join'
+const LEGACY_ROOM_QUERY_PARAM = 'room'
 
-const CARD_COLORS = [
-  '#FF6B6B',
-  '#4ECDC4',
-  '#FFE66D',
-  '#A855F7',
-  '#FF8E53',
-  '#06D6A0',
-  '#FF6B9D',
-  '#4361EE',
-  '#F77F00',
-  '#2EC4B6',
-  '#E040FB',
-  '#00B4D8',
-]
+let _convexClient: ConvexReactClient | null = null
 
-let convexClient: ConvexReactClient | null = null
-
-function getConvexClient() {
-  const convexUrl = import.meta.env.VITE_CONVEX_URL
-  if (!convexUrl) {
+function gc() {
+  const url = import.meta.env.VITE_CONVEX_URL
+  if (!url) {
     return null
   }
 
-  if (convexClient) {
-    return convexClient
-  }
-
-  convexClient = new ConvexReactClient(convexUrl)
-  return convexClient
+  return (_convexClient ??= new ConvexReactClient(url))
 }
 
-function safeStorageGet(key: string) {
-  if (typeof window === 'undefined') {
-    return null
-  }
-  return window.localStorage.getItem(key)
+function sg(key: string) {
+  return typeof window !== 'undefined' ? localStorage.getItem(key) : null
 }
 
-function safeStorageSet(key: string, value: string) {
-  if (typeof window === 'undefined') {
-    return
+function ss(key: string, value: string) {
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(key, value)
   }
-  window.localStorage.setItem(key, value)
 }
 
-function safeStorageRemove(key: string) {
-  if (typeof window === 'undefined') {
-    return
+function sd(key: string) {
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem(key)
   }
-  window.localStorage.removeItem(key)
 }
 
-function getPlayerToken() {
-  const existing = safeStorageGet(PLAYER_TOKEN_STORAGE_KEY)
+function getToken() {
+  const existing = sg(PLAYER_TOKEN_STORAGE_KEY)
   if (existing && existing.length >= 8) {
     return existing
   }
 
-  const generated =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`
-
-  safeStorageSet(PLAYER_TOKEN_STORAGE_KEY, generated)
-  return generated
+  const token =
+    crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  ss(PLAYER_TOKEN_STORAGE_KEY, token)
+  return token
 }
 
-function normalizeCode(code: string) {
-  return code.trim().toUpperCase()
+function norm(value: string) {
+  return value.trim().toUpperCase()
 }
 
-function getErrorMessage(error: unknown) {
-  if (error instanceof Error) {
-    return error.message
+function em(error: unknown) {
+  return error instanceof Error ? error.message : 'Something went wrong.'
+}
+
+type GK = 'lip-reading' | 'want-will-wont'
+
+function isGameKey(value: string | null): value is GK {
+  return value === 'lip-reading' || value === 'want-will-wont'
+}
+
+export function resolveInitialRoomInput(
+  storageGet: (key: string) => string | null = sg,
+  locationSearch = typeof window === 'undefined' ? '' : window.location.search,
+) {
+  const searchParams = new URLSearchParams(locationSearch)
+  const roomFromSearch =
+    searchParams.get(JOIN_QUERY_PARAM) ?? searchParams.get(LEGACY_ROOM_QUERY_PARAM)
+
+  if (roomFromSearch && roomFromSearch.trim()) {
+    return norm(roomFromSearch)
   }
-  return 'Something went wrong.'
+
+  return storageGet(LIP_ROOM_STORAGE_KEY) ?? ''
 }
 
-function formatSeconds(seconds: number) {
-  const clamped = Math.max(0, seconds)
-  const mins = Math.floor(clamped / 60)
-  const secs = clamped % 60
-  return `${mins}:${secs.toString().padStart(2, '0')}`
-}
-
-function LipRead() {
-  const client = getConvexClient()
-  if (!client) {
-    return <MissingConvexConfig />
+export function resolveInitialGame(
+  storageGet: (key: string) => string | null = sg,
+  locationSearch = typeof window === 'undefined' ? '' : window.location.search,
+) {
+  const searchGame = new URLSearchParams(locationSearch).get(GAME_QUERY_PARAM)
+  if (isGameKey(searchGame)) {
+    return searchGame
   }
 
+  const storedGame = storageGet(SELECTED_GAME_STORAGE_KEY)
+  return isGameKey(storedGame) ? storedGame : null
+}
+
+export function buildInviteUrl(
+  code: string,
+  game: GK = 'lip-reading',
+  currentLocation: Pick<Location, 'href'> | null =
+    typeof window === 'undefined' ? null : window.location,
+) {
+  const normalizedCode = norm(code)
+  if (!normalizedCode) {
+    return ''
+  }
+
+  if (!currentLocation) {
+    return `/?${JOIN_QUERY_PARAM}=${normalizedCode}&${GAME_QUERY_PARAM}=${game}`
+  }
+
+  const inviteUrl = new URL(currentLocation.href)
+  inviteUrl.searchParams.set(JOIN_QUERY_PARAM, normalizedCode)
+  inviteUrl.searchParams.set(GAME_QUERY_PARAM, game)
+  return inviteUrl.toString()
+}
+
+const S = {
+  bg: '#FAFAF8',
+  surface: '#FFFFFF',
+  ink: '#141414',
+  soft: '#F2F1EF',
+  line: '#E8E7E4',
+  muted: '#9B9992',
+  dim: '#C8C7C2',
+  accent: '#C96A3A',
+  accentLight: 'rgba(201,106,58,0.08)',
+  accentSoft: 'rgba(201,106,58,0.15)',
+}
+
+const ease = 'cubic-bezier(0.16, 1, 0.3, 1)'
+const easeOut = 'cubic-bezier(0.25, 0, 0, 1)'
+const WWW_SWIPE_THRESHOLD = 48
+
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=DM+Mono:wght@300;400;500&display=swap');
+*{box-sizing:border-box;}
+html,body{margin:0;background:${S.bg};-webkit-font-smoothing:antialiased;}
+
+@keyframes fadeUp{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:translateY(0);}}
+@keyframes fadeIn{from{opacity:0;}to{opacity:1;}}
+@keyframes scaleIn{from{opacity:0;transform:scale(0.96);}to{opacity:1;transform:scale(1);}}
+@keyframes tickUp{from{transform:translateY(6px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+@keyframes dotPulse{0%,100%{transform:scale(1);opacity:0.5;}50%{transform:scale(1.6);opacity:1;}}
+@keyframes softPop{0%{transform:scale(1);}40%{transform:scale(1.07);}100%{transform:scale(1);}}
+@keyframes breathe{0%,100%{opacity:0.4;}50%{opacity:0.9;}}
+
+.a1{animation:fadeUp 0.55s ${ease} both;}
+.a2{animation:fadeUp 0.55s 0.07s ${ease} both;}
+.a3{animation:fadeUp 0.55s 0.14s ${ease} both;}
+.a4{animation:fadeUp 0.55s 0.21s ${ease} both;}
+.a5{animation:fadeUp 0.55s 0.28s ${ease} both;}
+.aFade{animation:fadeIn 0.35s ease both;}
+.aPop{animation:softPop 0.35s ${ease} both;}
+.aScale{animation:scaleIn 0.4s ${ease} both;}
+
+.sbtn{
+  cursor:pointer;border:none;font-family:'DM Mono',monospace;letter-spacing:0.04em;
+  transition:background 0.2s ease, color 0.2s ease, transform 0.15s ${ease}, opacity 0.2s ease;
+  position:relative;overflow:hidden;
+}
+.sbtn::after{content:'';position:absolute;inset:0;background:${S.ink};opacity:0;transition:opacity 0.2s ease;}
+.sbtn:hover:not(:disabled)::after{opacity:0.05;}
+.sbtn:active:not(:disabled){transform:scale(0.975);}
+.sbtn:disabled{opacity:0.35;cursor:not-allowed;}
+
+.swipebtn{
+  cursor:pointer;border:none;font-family:'DM Mono',monospace;font-size:13px;font-weight:400;letter-spacing:0.06em;
+  transition:background 0.18s ease,color 0.18s ease,transform 0.18s ${ease},box-shadow 0.2s ease;
+  position:relative;overflow:hidden;
+}
+.swipebtn::before{content:'';position:absolute;bottom:0;left:0;right:0;height:0;background:currentColor;opacity:0.06;transition:height 0.2s ease;}
+.swipebtn:hover:not(:disabled)::before{height:100%;}
+.swipebtn:hover:not(:disabled){transform:translateY(-3px);box-shadow:0 8px 24px rgba(0,0,0,0.08);}
+.swipebtn:active:not(:disabled){transform:translateY(0);box-shadow:none;}
+.swipebtn:disabled{opacity:0.3;cursor:not-allowed;}
+
+.gamecard{transition:transform 0.25s ${ease},box-shadow 0.25s ${ease};}
+.gamecard:hover{transform:translateY(-4px);box-shadow:0 16px 48px rgba(0,0,0,0.07)!important;}
+
+input{font-family:'DM Mono',monospace!important;font-size:15px!important;transition:border-color 0.2s ease,box-shadow 0.2s ease;}
+input:focus{outline:none;}
+input::placeholder{color:${S.dim};}
+`
+
+function ManyCardsHome() {
+  const client = gc()
+  if (!client) return <div style={{ padding: 40, fontFamily: "'DM Mono',monospace", fontSize: 13, color: S.ink }}>Missing VITE_CONVEX_URL</div>
   return (
     <ConvexProvider client={client}>
-      <LipReadGame />
+      <style>{CSS}</style>
+      <AppRoot />
     </ConvexProvider>
   )
 }
 
-function MissingConvexConfig() {
-  const pageStyle: CSSProperties = {
-    position: 'fixed',
-    inset: 0,
-    background: '#FAFAFA',
-    fontFamily: "'Nunito', sans-serif",
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
-  }
+function AppRoot() {
+  const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams()
+  const urlJoin = norm(params.get('join') ?? '')
+  const urlGame = params.get(GAME_QUERY_PARAM) ?? ''
 
+  const [game, setGame] = useState<GK | null>(() => resolveInitialGame())
+
+  // Strip URL params after reading so they don't persist on reload
+  useEffect(() => {
+    if (urlJoin || urlGame) {
+      const u = new URL(window.location.href)
+      u.searchParams.delete('join'); u.searchParams.delete('game')
+      window.history.replaceState({}, '', u.toString())
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { game ? ss(SELECTED_GAME_STORAGE_KEY, game) : sd(SELECTED_GAME_STORAGE_KEY) }, [game])
+  if (!game) return <Home onSelect={setGame} />
+  if (game === 'want-will-wont') return <WWWGame onBack={() => setGame(null)} joinCode={urlJoin} />
+  return <LipGame onBack={() => setGame(null)} joinCode={urlJoin} />
+}
+
+// ── MICRO COMPONENTS ─────────────────────────────────────────────────────────
+
+function NavLink({ children, onClick, style }: { children: React.ReactNode; onClick?: () => void; style?: CSSProperties }) {
+  const [hov, setHov] = useState(false)
   return (
-    <div style={pageStyle}>
-      <div
-        style={{
-          margin: 'auto',
-          width: 'min(420px, 92vw)',
-          borderRadius: 20,
-          border: '3px solid #222',
-          boxShadow: '6px 6px 0 #222',
-          background: '#fff',
-          padding: 24,
-        }}
-      >
-        <h2 style={{ margin: 0, fontFamily: "'Fredoka One', sans-serif", fontSize: 28 }}>
-          Missing `VITE_CONVEX_URL`
-        </h2>
-        <p style={{ marginBottom: 0, color: '#333' }}>Set the env var and reload.</p>
+    <button onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
+      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0', fontFamily: "'DM Mono',monospace", fontSize: 12, fontWeight: 400, color: S.muted, letterSpacing: '0.08em', textTransform: 'uppercase', position: 'relative', transition: 'color 0.2s ease', ...style }}>
+      {children}
+      <span style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 1, background: S.muted, transformOrigin: 'left', transform: `scaleX(${hov ? 1 : 0})`, transition: `transform 0.25s ${easeOut}`, display: 'block' }} />
+    </button>
+  )
+}
+
+function Tag({ children, color = S.accent }: { children: React.ReactNode; color?: string }) {
+  return (
+    <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, fontWeight: 500, letterSpacing: '0.12em', textTransform: 'uppercase', color, background: color === S.accent ? S.accentLight : `${color}12`, padding: '3px 8px', borderRadius: 100 }}>
+      {children}
+    </span>
+  )
+}
+
+function WaitingDots() {
+  return (
+    <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
+      {[0, 1, 2].map(i => (
+        <div key={i} style={{ width: 5, height: 5, borderRadius: '50%', background: S.dim, animation: `dotPulse 1.2s ${i * 0.2}s ease-in-out infinite` }} />
+      ))}
+    </div>
+  )
+}
+
+function ProgressLine({ value, max, color = S.accent }: { value: number; max: number; color?: string }) {
+  const pct = max > 0 ? (value / max) * 100 : 0
+  return (
+    <div style={{ height: 2, background: S.line, borderRadius: 1, overflow: 'hidden' }}>
+      <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 1, transition: `width 0.6s ${easeOut}` }} />
+    </div>
+  )
+}
+
+function AnimNum({ value, style }: { value: number; style?: CSSProperties }) {
+  const [key, setKey] = useState(0)
+  const prev = useRef(value)
+  useEffect(() => { if (value !== prev.current) { setKey(k => k + 1); prev.current = value } }, [value])
+  return <span key={key} style={{ display: 'inline-block', animation: `tickUp 0.3s ${ease} both`, ...style }}>{value}</span>
+}
+
+function Card({ children, style, className, onClick }: { children: React.ReactNode; style?: CSSProperties; className?: string; onClick?: () => void }) {
+  return (
+    <div className={className} onClick={onClick} style={{ background: S.surface, border: `1px solid ${S.line}`, borderRadius: 16, ...style }}>
+      {children}
+    </div>
+  )
+}
+
+function Btn({ children, onClick, disabled, variant = 'primary', size = 'md', style }: {
+  children: React.ReactNode; onClick?: () => void; disabled?: boolean;
+  variant?: 'primary' | 'secondary' | 'ghost'; size?: 'sm' | 'md' | 'lg'; style?: CSSProperties
+}) {
+  const h = { sm: 36, md: 44, lg: 52 }
+  const fs = { sm: 12, md: 13, lg: 14 }
+  const px = { sm: 14, md: 20, lg: 28 }
+  const vs = {
+    primary: { background: S.ink, color: S.bg },
+    secondary: { background: S.soft, color: S.ink },
+    ghost: { background: 'transparent', color: S.muted, border: `1px solid ${S.line}` },
+  }
+  return (
+    <button className="sbtn" onClick={onClick} disabled={disabled}
+      style={{ height: h[size], padding: `0 ${px[size]}px`, fontSize: fs[size], borderRadius: 10, ...vs[variant], ...style }}>
+      {children}
+    </button>
+  )
+}
+
+function Field({ value, onChange, placeholder, maxLength, style, onKeyDown }: { value: string; onChange: (v: string) => void; placeholder?: string; maxLength?: number; style?: CSSProperties; onKeyDown?: (e: React.KeyboardEvent) => void }) {
+  const [focus, setFocus] = useState(false)
+  return (
+    <input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} maxLength={maxLength}
+      onFocus={() => setFocus(true)} onBlur={() => setFocus(false)} onKeyDown={onKeyDown}
+      style={{ width: '100%', height: 44, background: focus ? S.surface : S.soft, border: `1px solid ${focus ? S.accent : S.line}`, borderRadius: 10, color: S.ink, padding: '0 14px', boxShadow: focus ? `0 0 0 3px ${S.accentSoft}` : 'none', ...style }} />
+  )
+}
+
+function Divider({ style, className }: { style?: CSSProperties; className?: string }) {
+  return <div className={className} style={{ height: 1, background: S.line, ...style }} />
+}
+
+function ErrorNote({ msg }: { msg: string }) {
+  return (
+    <div className="aFade" style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, color: S.accent, padding: '10px 12px', background: S.accentLight, borderRadius: 8, marginTop: 12 }}>
+      {msg}
+    </div>
+  )
+}
+
+// ── HOME ──────────────────────────────────────────────────────────────────────
+function Home({ onSelect }: { onSelect: (g: GK) => void }) {
+  return (
+    <div style={{ minHeight: '100vh', fontFamily: "'Cormorant Garamond',serif", color: S.ink, padding: '0 24px 100px', maxWidth: 680, margin: '0 auto' }}>
+      <div className="a1" style={{ paddingTop: 64, paddingBottom: 48, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: S.muted, marginBottom: 10 }}>Card Games</div>
+          <h1 style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 'clamp(48px,10vw,88px)', lineHeight: 0.9, margin: 0, letterSpacing: '-0.02em' }}>
+            Many<br /><em>Cards</em>
+          </h1>
+        </div>
+        <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.12em', color: S.dim, lineHeight: 1.8 }}>
+          Two players<br />One room<br />Endless fun
+        </div>
+      </div>
+
+      <Divider className="a2" />
+
+      <div className="a3" style={{ display: 'grid', gap: 12, marginTop: 24, marginBottom: 48 }}>
+        <Card className="gamecard" style={{ padding: '28px 28px', cursor: 'pointer', boxShadow: '0 2px 12px rgba(0,0,0,0.04)' }} onClick={() => onSelect('lip-reading')}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
+            <div>
+              <Tag>Game 01</Tag>
+              <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 400, fontSize: 34, lineHeight: 1, marginTop: 10, letterSpacing: '-0.01em' }}>Lip Read</div>
+            </div>
+            <ArrowCircle />
+          </div>
+          <p style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, fontWeight: 300, lineHeight: 1.8, color: S.muted, margin: 0 }}>
+            One player mouths words in silence. The other reads their lips and scores points against the clock.
+          </p>
+          <Divider style={{ marginTop: 20, marginBottom: 16 }} />
+          <div style={{ display: 'flex', gap: 24 }}>
+            {[['2', 'Players'], ['60s', 'Per round'], ['Speed', 'Type']].map(([val, label]) => (
+              <div key={label}>
+                <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 14, fontWeight: 500, color: S.ink }}>{val}</div>
+                <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: S.muted, letterSpacing: '0.08em', marginTop: 1 }}>{label}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="gamecard" style={{ padding: '28px 28px', cursor: 'pointer', boxShadow: '0 2px 12px rgba(0,0,0,0.04)' }} onClick={() => onSelect('want-will-wont')}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
+            <div>
+              <Tag>Game 02</Tag>
+              <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 400, fontSize: 34, lineHeight: 1, marginTop: 10, letterSpacing: '-0.01em' }}>Want / Will / Won't</div>
+            </div>
+            <ArrowCircle />
+          </div>
+          <p style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, fontWeight: 300, lineHeight: 1.8, color: S.muted, margin: 0 }}>
+            Swipe activity cards left, up, or right. Outcomes are revealed when both players have responded.
+          </p>
+          <Divider style={{ marginTop: 20, marginBottom: 16 }} />
+          <div style={{ display: 'flex', gap: 24 }}>
+            {[['2', 'Players'], ['30', 'Cards'], ['Reveal', 'Type']].map(([val, label]) => (
+              <div key={label}>
+                <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 14, fontWeight: 500, color: S.ink }}>{val}</div>
+                <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: S.muted, letterSpacing: '0.08em', marginTop: 1 }}>{label}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+
+    </div>
+  )
+}
+
+function ArrowCircle() {
+  const [hov, setHov] = useState(false)
+  return (
+    <div onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
+      style={{ width: 40, height: 40, borderRadius: '50%', border: `1px solid ${hov ? S.accent : S.line}`, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: `border-color 0.2s ease, background 0.2s ease`, background: hov ? S.accentLight : 'transparent', flexShrink: 0 }}>
+      <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 16, color: hov ? S.accent : S.dim, transition: 'color 0.2s ease, transform 0.2s ease', display: 'block', transform: hov ? 'translate(1px,0)' : 'none' }}>→</span>
+    </div>
+  )
+}
+
+// ── SHELL ─────────────────────────────────────────────────────────────────────
+function Shell({ title, subtitle, onBack, onExit, children }: { title: string; subtitle?: string; onBack: () => void; onExit: () => void; children: React.ReactNode }) {
+  return (
+    <div style={{ minHeight: '100vh', fontFamily: "'Cormorant Garamond',serif", color: S.ink, padding: '0 24px 100px', maxWidth: 680, margin: '0 auto' }}>
+      <div className="a1" style={{ paddingTop: 28, paddingBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, position: 'sticky', top: 0, background: S.bg, zIndex: 10 }}>
+        <NavLink onClick={onBack}>← Back</NavLink>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 400, fontSize: 20, letterSpacing: '-0.01em' }}>{title}</div>
+          {subtitle && <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.15em', color: S.muted, marginTop: 2 }}>{subtitle}</div>}
+        </div>
+        <NavLink onClick={onExit}>Leave</NavLink>
+      </div>
+      <Divider className="a1" />
+      <div style={{ paddingTop: 28 }}>{children}</div>
+    </div>
+  )
+}
+
+// ── QR INVITE ────────────────────────────────────────────────────────────────
+function QRInvite({ code, game }: { code: string; game: GK }) {
+  const inviteUrl = buildInviteUrl(code, game)
+  return (
+    <div className="aScale" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20 }}>
+      <div style={{ padding: 16, background: S.surface, borderRadius: 12, border: `1px solid ${S.line}`, boxShadow: '0 4px 24px rgba(0,0,0,0.06)' }}>
+        <QRCodeSVG value={inviteUrl || code} size={180} bgColor={S.surface} fgColor={S.ink} level="M" />
+      </div>
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: S.muted, marginBottom: 6 }}>
+          Show this to your partner
+        </div>
+        <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 28, letterSpacing: '0.08em', color: S.ink }}>{code}</div>
+      </div>
+      {inviteUrl ? (
+        <div style={{ maxWidth: 320, textAlign: 'center' }}>
+          <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, lineHeight: 1.7, color: S.muted, marginBottom: 8 }}>
+            Scan this QR or open the share link on another phone to join the same room.
+          </div>
+          <a href={inviteUrl} aria-label="Join room via share link" style={{ display: 'block', fontFamily: "'DM Mono',monospace", fontSize: 11, lineHeight: 1.7, color: S.accent, wordBreak: 'break-word' }}>
+            {inviteUrl}
+          </a>
+        </div>
+      ) : null}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <WaitingDots />
+        <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, letterSpacing: '0.1em', color: S.muted }}>Waiting for partner</span>
       </div>
     </div>
   )
 }
 
-function LipReadGame() {
-  const [playerToken] = useState(getPlayerToken)
-  const [name, setName] = useState(() => safeStorageGet(NAME_STORAGE_KEY) ?? '')
-  const [roomInput, setRoomInput] = useState(() => safeStorageGet(ROOM_STORAGE_KEY) ?? '')
-  const [activeCode, setActiveCode] = useState(() => safeStorageGet(ROOM_STORAGE_KEY) ?? '')
-  const [durationSeconds, setDurationSeconds] = useState(60)
-  const [cardDraft, setCardDraft] = useState('')
+type CombinedEntryPanelProps = {
+  name: string
+  roomInput: string
+  roomCode: string
+  inviteUrl: string
+  feedback: string
+  joinedName: string
+  inviteStatus: string
+  playersCount: number
+  workingAction: string
+  nameChangesApplyNextTime: boolean
+  onNameChange: (value: string) => void
+  onRoomInputChange: (value: string) => void
+  onCreate: () => void
+  onJoin: () => void
+  onLeaveRoom: () => void
+}
+
+export function CombinedEntryPanel({
+  name,
+  roomInput,
+  roomCode,
+  inviteUrl,
+  feedback,
+  joinedName,
+  inviteStatus,
+  playersCount,
+  workingAction,
+  nameChangesApplyNextTime,
+  onNameChange,
+  onRoomInputChange,
+  onCreate,
+  onJoin,
+  onLeaveRoom,
+}: CombinedEntryPanelProps) {
+  const hasInvite = roomCode.length > 0
+
+  return (
+    <div style={{ display: 'grid', gap: 16, gridTemplateColumns: hasInvite ? 'minmax(0, 1fr) minmax(260px, 320px)' : '1fr', alignItems: 'start' }}>
+      <Card style={{ padding: '28px 24px' }} className="a2">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: S.muted, marginBottom: 6 }}>
+              Lip Read
+            </div>
+            <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 400, fontSize: 34, lineHeight: 1 }}>
+              {hasInvite ? 'Invite or wait' : 'Create or join'}
+            </div>
+          </div>
+          {hasInvite ? <Tag>{playersCount}/2 players</Tag> : null}
+        </div>
+
+        <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: S.muted, marginBottom: 12 }}>
+          Your name
+        </div>
+        <Field value={name} onChange={onNameChange} placeholder="Player name" maxLength={24} style={{ marginBottom: 18 }} />
+
+        {hasInvite ? (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+              <Tag>{inviteStatus}</Tag>
+              <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: S.muted }}>
+                Room {roomCode}
+              </span>
+            </div>
+            <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 24, lineHeight: 1.1, marginBottom: 8 }}>
+              {joinedName ? `${joinedName} is ready.` : 'Waiting in room.'}
+            </div>
+            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, lineHeight: 1.7, color: S.muted, marginBottom: 18 }}>
+              Keep this screen open while your partner joins from the QR or share link.
+            </div>
+            {nameChangesApplyNextTime ? (
+              <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, lineHeight: 1.7, color: S.muted, marginBottom: 18 }}>
+                Name changes here will apply the next time you create or join a room.
+              </div>
+            ) : null}
+            <Btn variant="secondary" size="lg" disabled={workingAction === 'leave'} onClick={onLeaveRoom} style={{ width: '100%' }}>
+              {workingAction === 'leave' ? 'Leaving…' : 'Exit room'}
+            </Btn>
+          </>
+        ) : (
+          <>
+            <Btn variant="primary" size="lg" disabled={workingAction === 'create'} onClick={onCreate} style={{ width: '100%', marginBottom: 18 }}>
+              {workingAction === 'create' ? 'Creating…' : 'Create room'}
+            </Btn>
+
+            <Divider style={{ marginBottom: 18 }} />
+
+            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: S.muted, marginBottom: 12 }}>
+              Join with a code
+            </div>
+            <Field value={roomInput} onChange={(value) => onRoomInputChange(norm(value))} placeholder="Enter room code" maxLength={8} style={{ marginBottom: 14 }} />
+            <Btn variant="secondary" size="lg" disabled={workingAction === 'join'} onClick={onJoin} style={{ width: '100%' }}>
+              {workingAction === 'join' ? 'Joining…' : 'Join with code'}
+            </Btn>
+          </>
+        )}
+
+        {feedback ? <ErrorNote msg={feedback} /> : null}
+      </Card>
+
+      {hasInvite ? (
+        <Card style={{ padding: '24px 22px' }} className="a3">
+          <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: S.muted, marginBottom: 8 }}>
+            Invite a friend
+          </div>
+          <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 34, lineHeight: 1, color: S.ink, marginBottom: 10 }}>
+            {roomCode}
+          </div>
+          <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, lineHeight: 1.7, color: S.muted, marginBottom: 16 }}>
+            Scan this QR or open the share link on another phone to join the same Lip Read room.
+          </div>
+          <div aria-label="Join room QR" style={{ display: 'flex', justifyContent: 'center', padding: 16, borderRadius: 12, border: `1px solid ${S.line}`, background: S.soft, marginBottom: 14 }}>
+            <QRCodeSVG value={inviteUrl || roomCode} size={180} bgColor={S.soft} fgColor={S.ink} level="M" />
+          </div>
+          <a href={inviteUrl} aria-label="Join room via share link" style={{ display: 'block', fontFamily: "'DM Mono',monospace", fontSize: 11, lineHeight: 1.7, color: S.accent, wordBreak: 'break-word' }}>
+            {inviteUrl}
+          </a>
+        </Card>
+      ) : null}
+    </div>
+  )
+}
+
+// ── NAME + READY (host) ───────────────────────────────────────────────────────
+function HostEntry({ name, setName, working, feedback, onReady }: {
+  name: string; setName: (v: string) => void; working: boolean; feedback: string; onReady: () => void
+}) {
+  return (
+    <Card style={{ padding: '32px 28px' }} className="a2">
+      <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: S.muted, marginBottom: 12 }}>
+        Your name
+      </div>
+      <Field value={name} onChange={setName} placeholder="Enter your name" maxLength={24}
+        style={{ marginBottom: 20 }}
+        onKeyDown={(e: React.KeyboardEvent) => { if (e.key === 'Enter') onReady() }}
+      />
+      <Btn variant="primary" size="lg" disabled={working || !name.trim()} onClick={onReady} style={{ width: '100%' }}>
+        {working ? '...' : 'Ready →'}
+      </Btn>
+      {feedback && <ErrorNote msg={feedback} />}
+    </Card>
+  )
+}
+
+// ── NAME + JOIN (joiner via QR) ───────────────────────────────────────────────
+function JoinEntry({ name, setName, joinCode, working, feedback, onJoin }: {
+  name: string; setName: (v: string) => void; joinCode: string; working: boolean; feedback: string; onJoin: () => void
+}) {
+  return (
+    <Card style={{ padding: '32px 28px' }} className="a2">
+      <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: S.muted, marginBottom: 4 }}>
+        Joining room
+      </div>
+      <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 32, letterSpacing: '0.06em', color: S.ink, marginBottom: 20 }}>
+        {joinCode}
+      </div>
+      <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: S.muted, marginBottom: 12 }}>
+        Your name
+      </div>
+      <Field value={name} onChange={setName} placeholder="Enter your name" maxLength={24}
+        style={{ marginBottom: 20 }}
+        onKeyDown={(e: React.KeyboardEvent) => { if (e.key === 'Enter') onJoin() }}
+      />
+      <Btn variant="primary" size="lg" disabled={working || !name.trim()} onClick={onJoin} style={{ width: '100%' }}>
+        {working ? '...' : 'Join game →'}
+      </Btn>
+      {feedback && <ErrorNote msg={feedback} />}
+    </Card>
+  )
+}
+
+// ── WANT/WILL/WON'T ───────────────────────────────────────────────────────────
+export type WWWSwipeDecision = 'want' | 'will' | 'wont'
+
+export function resolveWWWSwipeDecision(
+  deltaX: number,
+  deltaY: number,
+  threshold = WWW_SWIPE_THRESHOLD,
+): WWWSwipeDecision | null {
+  const absX = Math.abs(deltaX)
+  const absY = Math.abs(deltaY)
+
+  if (absX < threshold && absY < threshold) {
+    return null
+  }
+
+  if (absY > absX) {
+    return deltaY <= -threshold ? 'want' : null
+  }
+
+  if (deltaX <= -threshold) {
+    return 'wont'
+  }
+
+  if (deltaX >= threshold) {
+    return 'will'
+  }
+
+  return null
+}
+
+export function resolveWWWSwipeSubmission(
+  canSwipe: boolean,
+  deltaX: number,
+  deltaY: number,
+  threshold = WWW_SWIPE_THRESHOLD,
+): WWWSwipeDecision | null {
+  if (!canSwipe) {
+    return null
+  }
+
+  return resolveWWWSwipeDecision(deltaX, deltaY, threshold)
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
+
+function softClamp(value: number, limit: number, overshootFactor = 0.35) {
+  if (Math.abs(value) <= limit) {
+    return value
+  }
+
+  return Math.sign(value) * (limit + (Math.abs(value) - limit) * overshootFactor)
+}
+
+export function resolveWWWSwipePreviewDecision(
+  deltaX: number,
+  deltaY: number,
+  previewThreshold = 8,
+): WWWSwipeDecision | null {
+  const absX = Math.abs(deltaX)
+  const absY = Math.abs(deltaY)
+
+  if (absX < previewThreshold && absY < previewThreshold) {
+    return null
+  }
+
+  if (absY > absX) {
+    return deltaY <= -previewThreshold ? 'want' : null
+  }
+
+  if (deltaX <= -previewThreshold) {
+    return 'wont'
+  }
+
+  if (deltaX >= previewThreshold) {
+    return 'will'
+  }
+
+  return null
+}
+
+export function getWWWSwipeFeedback(
+  deltaX: number,
+  deltaY: number,
+  threshold = WWW_SWIPE_THRESHOLD,
+) {
+  const previewDecision = resolveWWWSwipePreviewDecision(deltaX, deltaY)
+  const committedDecision = resolveWWWSwipeDecision(deltaX, deltaY, threshold)
+  const dominantDistance = previewDecision === 'want' ? Math.abs(Math.min(deltaY, 0)) : Math.abs(deltaX)
+  const progress = clamp(dominantDistance / threshold, 0, 1)
+
+  return {
+    previewDecision,
+    committedDecision,
+    cue:
+      previewDecision === 'wont'
+        ? "← Won't"
+        : previewDecision === 'want'
+          ? '↑ Want'
+          : previewDecision === 'will'
+            ? '→ Will'
+            : null,
+    progress,
+    translateX: softClamp(deltaX, 220),
+    translateY: deltaY < 0 ? softClamp(deltaY, 220) : softClamp(deltaY, 96, 0.25),
+    rotate: clamp(deltaX / 9, -14, 14),
+    scale: 1 - progress * 0.04,
+    opacity: 1 - progress * 0.06,
+  }
+}
+
+const WWW_DECISION_OPTIONS = [
+  { decision: 'wont' as const, label: "Won't", direction: '←', background: S.soft, color: S.ink },
+  { decision: 'want' as const, label: 'Want', direction: '↑', background: S.accentLight, color: S.accent },
+  { decision: 'will' as const, label: 'Will', direction: '→', background: S.soft, color: S.ink },
+]
+
+export function WWWDecisionControls({
+  canSubmitDecision,
+  showHint,
+  working,
+  onDecision,
+}: {
+  canSubmitDecision: boolean
+  showHint: boolean
+  working: boolean
+  onDecision: (decision: WWWSwipeDecision) => void
+}) {
+  return (
+    <div style={{ marginBottom: 20 }} className="a4">
+      {showHint && (
+        <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.08em', color: S.muted, marginBottom: 12, textAlign: 'center' }}>
+          Swipe the card, or tap a choice below.
+        </div>
+      )}
+
+      <div role="group" aria-label="Decision choices" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+        {WWW_DECISION_OPTIONS.map(({ decision, label, direction, background, color }) => (
+          <button key={decision} className="swipebtn" disabled={!canSubmitDecision} onClick={() => onDecision(decision)} style={{
+            height: 72, background, color, border: `1px solid ${color === S.accent ? S.accentSoft : S.line}`, borderRadius: 12,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 5,
+          }}>
+            <span style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 22, fontWeight: 300, lineHeight: 1 }}>{direction}</span>
+            <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+              {working ? '...' : label}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export function WWWSwipeCardFace({
+  activeCardId,
+  activeCardText,
+  canSwipe,
+  dragFeedback,
+  isDragging,
+}: {
+  activeCardId: string
+  activeCardText: string
+  canSwipe: boolean
+  dragFeedback: ReturnType<typeof getWWWSwipeFeedback>
+  isDragging: boolean
+}) {
+  const previewOption = WWW_DECISION_OPTIONS.find(option => option.decision === dragFeedback.previewDecision) ?? null
+
+  return (
+    <div className="aScale" key={activeCardId} style={{ width: '100%', maxWidth: 520 }}>
+      <div style={{
+        width: '100%',
+        padding: '32px 28px',
+        borderRadius: 18,
+        border: `1px solid ${previewOption ? (previewOption.color === S.accent ? S.accentSoft : S.line) : S.line}`,
+        background: previewOption ? previewOption.background : S.surface,
+        boxShadow: isDragging ? `0 ${18 + dragFeedback.progress * 8}px ${36 + dragFeedback.progress * 12}px rgba(0,0,0,${0.1 + dragFeedback.progress * 0.08})` : '0 8px 24px rgba(0,0,0,0.05)',
+        transform: `translate3d(${dragFeedback.translateX}px, ${dragFeedback.translateY}px, 0) rotate(${dragFeedback.rotate}deg) scale(${dragFeedback.scale})`,
+        opacity: dragFeedback.opacity,
+        willChange: canSwipe ? 'transform, box-shadow, background, border-color, opacity' : undefined,
+        transition: isDragging ? 'none' : `transform 0.22s ${ease}, box-shadow 0.22s ease, background 0.22s ease, border-color 0.22s ease, opacity 0.22s ease`,
+        position: 'relative',
+      }}>
+        {dragFeedback.cue && (
+          <div className="aFade" style={{
+            position: 'absolute',
+            top: 14,
+            right: 14,
+            padding: '6px 10px',
+            borderRadius: 999,
+            background: S.surface,
+            border: `1px solid ${previewOption?.color === S.accent ? S.accentSoft : S.line}`,
+            fontFamily: "'DM Mono',monospace",
+            fontSize: 10,
+            letterSpacing: '0.08em',
+            color: previewOption?.color ?? S.muted,
+          }}>
+            {dragFeedback.cue}
+          </div>
+        )}
+        <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: S.dim, marginBottom: 20 }}>Activity card</div>
+        <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 'clamp(24px,5vw,48px)', lineHeight: 1.2, color: S.ink, maxWidth: 420 }}>
+          {activeCardText}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function WWWSwipeActionCard({
+  activeCardId,
+  activeCardText,
+  canSwipe,
+  onDecision,
+}: {
+  activeCardId: string
+  activeCardText: string
+  canSwipe: boolean
+  onDecision: (decision: WWWSwipeDecision) => void
+}) {
+  const pointerStart = useRef<{ pointerId: number; clientX: number; clientY: number } | null>(null)
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
+  const dragFeedback = getWWWSwipeFeedback(dragOffset.x, dragOffset.y)
+  const isDragging = dragOffset.x !== 0 || dragOffset.y !== 0
+
+  const clearPointer = () => {
+    pointerStart.current = null
+    setDragOffset({ x: 0, y: 0 })
+  }
+
+  const releasePointer = (element: HTMLDivElement, pointerId: number) => {
+    if (element.hasPointerCapture?.(pointerId)) {
+      element.releasePointerCapture?.(pointerId)
+    }
+  }
+
+  const commitSwipe = (pointerId: number, clientX: number, clientY: number) => {
+    const start = pointerStart.current
+    if (!start || start.pointerId !== pointerId) {
+      return
+    }
+
+    clearPointer()
+
+    const decision = resolveWWWSwipeSubmission(canSwipe, clientX - start.clientX, clientY - start.clientY)
+    if (decision) {
+      onDecision(decision)
+    }
+  }
+
+  return (
+    <div
+      aria-disabled={!canSwipe}
+      aria-label="Swipe activity card"
+      onLostPointerCapture={clearPointer}
+      onPointerCancel={(event) => {
+        clearPointer()
+        releasePointer(event.currentTarget, event.pointerId)
+      }}
+      onPointerDown={(event) => {
+        if (!canSwipe) {
+          return
+        }
+
+        event.preventDefault()
+        pointerStart.current = {
+          pointerId: event.pointerId,
+          clientX: event.clientX,
+          clientY: event.clientY,
+        }
+        setDragOffset({ x: 0, y: 0 })
+        event.currentTarget.setPointerCapture?.(event.pointerId)
+      }}
+      onPointerMove={(event) => {
+        const start = pointerStart.current
+        if (!start || start.pointerId !== event.pointerId) {
+          return
+        }
+
+        event.preventDefault()
+        setDragOffset({
+          x: event.clientX - start.clientX,
+          y: event.clientY - start.clientY,
+        })
+      }}
+      onPointerUp={(event) => {
+        commitSwipe(event.pointerId, event.clientX, event.clientY)
+        releasePointer(event.currentTarget, event.pointerId)
+      }}
+      style={{
+        width: '100%',
+        cursor: canSwipe ? (isDragging ? 'grabbing' : 'grab') : 'default',
+        touchAction: canSwipe ? 'none' : 'auto',
+        userSelect: canSwipe ? 'none' : 'text',
+        WebkitUserSelect: canSwipe ? 'none' : 'text',
+        WebkitTouchCallout: canSwipe ? 'none' : 'default',
+        display: 'flex',
+        justifyContent: 'center',
+      }}
+    >
+      <WWWSwipeCardFace
+        activeCardId={activeCardId}
+        activeCardText={activeCardText}
+        canSwipe={canSwipe}
+        dragFeedback={dragFeedback}
+        isDragging={isDragging}
+      />
+    </div>
+  )
+}
+
+function WWWGame({ onBack, joinCode = '' }: { onBack: () => void; joinCode?: string }) {
+  const [token] = useState(getToken)
+  const [name, setName] = useState(() => sg('cards.name') ?? '')
+  const [activeCode, setActiveCode] = useState(() => sg('cards.www.room') ?? '')
+  const [working, setWorking] = useState(false)
   const [feedback, setFeedback] = useState('')
+  const [outcome, setOutcome] = useState<{ text: string; match: boolean; my: string; their: string } | null>(null)
+
+  const createSession = useMutation(api.wantWillWont.createSession)
+  const joinSession = useMutation(api.wantWillWont.joinSession)
+  const leaveSession = useMutation(api.wantWillWont.leaveSession)
+  const heartbeatPresence = useMutation(api.wantWillWont.heartbeatPresence)
+  const submitSwipe = useMutation(api.wantWillWont.submitSwipe)
+  const resetRound = useMutation(api.wantWillWont.resetRound)
+  const ensureCards = useMutation(api.wantWillWont.ensureCardsInitialized)
+
+  const code = norm(activeCode)
+  const state = useQuery(api.wantWillWont.getState, code && token ? { code, playerToken: token } : 'skip')
+
+  useEffect(() => { if (name) ss('cards.name', name) }, [name])
+  useEffect(() => { code ? ss('cards.www.room', code) : sd('cards.www.room') }, [code])
+  useEffect(() => { void ensureCards({}).catch(() => {}) }, [ensureCards])
+  useEffect(() => {
+    if (!state?.session.id || !code) return
+    const id = state.session.id
+    const ping = () => void heartbeatPresence({ sessionId: id, playerToken: token }).catch(() => {})
+    ping(); const t = setInterval(ping, 8000); return () => clearInterval(t)
+  }, [state?.session.id, code, token, heartbeatPresence])
+  useEffect(() => { if (code && state === null) { setFeedback('Session not found.'); setActiveCode(''); sd('cards.www.room') } }, [code, state])
+
+  const onLeave = () => { const c = code; setActiveCode(''); sd('cards.www.room'); if (c) void leaveSession({ code: c, playerToken: token }).catch(() => {}) }
+
+  const me = state?.me
+  const other = state?.players.find(p => !p.isMe) ?? null
+  const canAct = !!state && !!me && !me.done && !!state.activeCardId
+  const canSubmitDecision = canAct && !working
+  const playerCount = state?.players?.length ?? 0
+
+  const onSwipe = async (decision: WWWSwipeDecision) => {
+    if (!code || !state?.activeCardId || !canSubmitDecision) return
+    const cardText = state.activeCardText ?? ''
+    setWorking(true)
+    try {
+      const r = await submitSwipe({ code, playerToken: token, decision })
+      if (r.outcome) {
+        setOutcome({ text: cardText, match: r.outcome.isMatch, my: r.outcome.myDecision, their: r.outcome.otherDecision })
+        setTimeout(() => setOutcome(null), 4000)
+      }
+    } catch (e) { setFeedback(em(e)) } finally { setWorking(false) }
+  }
+
+  // ── No room yet: host entry or joiner entry ──
+  if (!code) {
+    if (joinCode) {
+      return (
+        <Shell title="Want / Will / Won't" onBack={onBack} onExit={onBack}>
+          <JoinEntry name={name} setName={setName} joinCode={joinCode} working={working} feedback={feedback}
+            onJoin={async () => {
+              if (!name.trim()) { setFeedback('Please enter your name.'); return }
+              setWorking(true); setFeedback('')
+              try { const r = await joinSession({ code: joinCode, name: name.trim(), playerToken: token }); setActiveCode(r.code) }
+              catch (e) { setFeedback(em(e)) } finally { setWorking(false) }
+            }} />
+        </Shell>
+      )
+    }
+    return (
+      <Shell title="Want / Will / Won't" onBack={onBack} onExit={onBack}>
+        <HostEntry name={name} setName={setName} working={working} feedback={feedback}
+          onReady={async () => {
+            if (!name.trim()) { setFeedback('Please enter your name.'); return }
+            setWorking(true); setFeedback('')
+            try { const r = await createSession({ name: name.trim(), playerToken: token }); setActiveCode(r.code) }
+            catch (e) { setFeedback(em(e)) } finally { setWorking(false) }
+          }} />
+      </Shell>
+    )
+  }
+
+  // ── Has room but waiting for partner: show QR ──
+  if (playerCount < 2 && state) {
+    return (
+      <Shell title="Want / Will / Won't" subtitle={`Room · ${code}`} onBack={onBack} onExit={onLeave}>
+        <div style={{ paddingTop: 24 }} className="a2">
+          <QRInvite code={code} game="want-will-wont" />
+        </div>
+      </Shell>
+    )
+  }
+
+  return (
+    <Shell title="Want / Will / Won't" subtitle={`Room · ${code}`} onBack={onBack} onExit={onLeave}>
+      {/* Progress */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }} className="a2">
+        {[
+          { label: 'You', pName: me?.name ?? '—', cur: me?.deckCursor ?? 0, total: me?.totalCards ?? 0 },
+          { label: 'Partner', pName: other?.name ?? '—', cur: other?.deckCursor ?? 0, total: other?.totalCards ?? 0 },
+        ].map(p => (
+          <Card key={p.label} style={{ padding: '16px 18px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: S.muted }}>{p.label}</div>
+              <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, color: S.muted }}>
+                <AnimNum value={p.cur} /> <span style={{ color: S.dim }}>/ {p.total}</span>
+              </div>
+            </div>
+            <ProgressLine value={p.cur} max={p.total} />
+            <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 400, fontSize: 16, color: S.ink, marginTop: 8 }}>{p.pName}</div>
+          </Card>
+        ))}
+      </div>
+
+      {/* Active card */}
+      <Card style={{ padding: '48px 32px', marginBottom: 16, minHeight: 200, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }} className="a3">
+        {!state ? <WaitingDots />
+          : me?.done ? (
+            <div className="aScale">
+              <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.2em', textTransform: 'uppercase', color: S.muted, marginBottom: 12 }}>
+                {state.allDone ? 'Session complete' : 'Waiting for partner'}
+              </div>
+              {state.allDone
+                ? <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 32 }}>All cards reviewed.</div>
+                : <WaitingDots />}
+            </div>
+          ) : (
+            <WWWSwipeActionCard
+              activeCardId={String(state.activeCardId)}
+              activeCardText={state.activeCardText ?? 'Stand by...'}
+              canSwipe={canSubmitDecision}
+              onDecision={(decision) => { void onSwipe(decision) }}
+            />
+          )}
+      </Card>
+
+      {/* Outcome toast */}
+      {outcome && (
+        <div className="aPop" style={{ marginBottom: 16, padding: '16px 20px', borderRadius: 12, background: outcome.match ? '#F0F9F4' : S.soft, border: `1px solid ${outcome.match ? '#C6E8D2' : S.line}`, display: 'flex', alignItems: 'center', gap: 14 }}>
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: outcome.match ? '#3D9A60' : S.dim, flexShrink: 0 }} />
+          <div>
+            <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 400, fontSize: 18, color: outcome.match ? '#2A7048' : S.ink }}>
+              {outcome.match ? 'Match!' : 'No match'}
+            </div>
+            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.08em', color: S.muted, marginTop: 2 }}>
+              You: {outcome.my} · Them: {outcome.their} · {outcome.text}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Decision controls */}
+      {!me?.done && (
+        <WWWDecisionControls
+          canSubmitDecision={canSubmitDecision}
+          showHint={canAct}
+          working={working}
+          onDecision={(decision) => { void onSwipe(decision) }}
+        />
+      )}
+
+      {/* Results log */}
+      {(state?.outcomes?.length ?? 0) > 0 && (
+        <Card style={{ overflow: 'hidden' }} className="a5">
+          <div style={{ padding: '16px 20px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: S.muted }}>Results</div>
+            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: S.dim }}>{state?.outcomes?.filter(o => o.isMatch).length ?? 0} matches</div>
+          </div>
+          <Divider />
+          {state!.outcomes.slice(0, 6).map((o, i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '11px 20px', borderBottom: i < Math.min(state!.outcomes.length, 6) - 1 ? `1px solid ${S.line}` : 'none' }}>
+              <span style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 400, fontSize: 16 }}>{o.cardText}</span>
+              <Tag color={o.isMatch ? '#3D9A60' : S.dim}>{o.isMatch ? 'match' : 'miss'}</Tag>
+            </div>
+          ))}
+          {state?.allDone && state.me.isHost && (
+            <div style={{ padding: '16px 20px' }}>
+              <Btn variant="secondary" size="md" onClick={async () => { try { await resetRound({ code, playerToken: token }) } catch (e) { setFeedback(em(e)) } }} style={{ width: '100%' }}>Play again</Btn>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {feedback && <ErrorNote msg={feedback} />}
+    </Shell>
+  )
+}
+
+// ── LIP READ ─────────────────────────────────────────────────────────────────
+function LipGame({ onBack, joinCode = '' }: { onBack: () => void; joinCode?: string }) {
+  const [token] = useState(getToken)
+  const [name, setName] = useState(resolveInitialPlayerName)
+  const [roomInput, setRoomInput] = useState(() => joinCode || resolveInitialRoomInput())
+  const [activeCode, setActiveCode] = useState(() => sg(LIP_ROOM_STORAGE_KEY) ?? '')
   const [workingAction, setWorkingAction] = useState('')
+  const [feedback, setFeedback] = useState('')
   const [now, setNow] = useState(Date.now())
-  const [sparkles, setSparkles] = useState<
-    Array<{ id: number; x: number; y: number; color: string; tx: string; ty: string }>
-  >([])
-  const [showCardsPanel, setShowCardsPanel] = useState(false)
-  const endingRoundRef = useRef(false)
 
   const createSession = useMutation(api.lipReading.createSession)
   const joinSession = useMutation(api.lipReading.joinSession)
   const leaveSession = useMutation(api.lipReading.leaveSession)
-  const ensureCardsInitialized = useMutation(api.lipReading.ensureCardsInitialized)
   const heartbeatPresence = useMutation(api.lipReading.heartbeatPresence)
-  const addCard = useMutation(api.lipReading.addCard)
-  const deleteCard = useMutation(api.lipReading.deleteCard)
-  const startRound = useMutation(api.lipReading.startRound).withOptimisticUpdate(
-    (localStore, args) => {
-      const state = localStore.getQuery(api.lipReading.getState, {
-        code: args.code,
-        playerToken: args.playerToken,
-      })
-      if (!state) {
-        return
-      }
+  const startRound = useMutation(api.lipReading.startRound)
+  const markCardResult = useMutation(api.lipReading.markCardResult)
+  const ensureCards = useMutation(api.lipReading.ensureCardsInitialized)
 
-      const optimisticDurationSeconds = Math.max(
-        20,
-        Math.min(180, Math.floor(args.durationSeconds ?? state.session.roundDurationSeconds)),
-      )
-      const nowMs = Date.now()
+  const code = norm(activeCode)
+  const state = useQuery(api.lipReading.getState, code && token ? { code, playerToken: token } : 'skip')
 
-      localStore.setQuery(
-        api.lipReading.getState,
-        { code: args.code, playerToken: args.playerToken },
-        {
-          ...state,
-          session: {
-            ...state.session,
-            phase: 'round',
-            roundNumber: state.session.roundNumber + 1,
-            roundDurationSeconds: optimisticDurationSeconds,
-            roundEndsAt: nowMs + optimisticDurationSeconds * 1000,
-            deckCursor: 0,
-          },
-          activeCardId: state.session.deckCardIds[0] ?? null,
-          activeCardText: null,
-          roundExpired: false,
-        },
-      )
-    },
-  )
-  const markCardResult = useMutation(api.lipReading.markCardResult).withOptimisticUpdate(
-    (localStore, args) => {
-      const state = localStore.getQuery(api.lipReading.getState, {
-        code: args.code,
-        playerToken: args.playerToken,
-      })
-      if (
-        !state ||
-        state.session.phase !== 'round' ||
-        state.session.turnToken !== args.playerToken ||
-        state.session.deckCardIds.length === 0
-      ) {
-        return
-      }
-
-      const nextCursor = state.session.deckCursor + 1
-      const isDeckComplete = nextCursor >= state.session.deckCardIds.length
-      const guesserToken =
-        args.result === 'correct'
-          ? state.players.find((player) => player.token !== state.session.turnToken)?.token ?? null
-          : null
-      const optimisticPlayers =
-        guesserToken === null
-          ? state.players
-          : state.players.map((player) =>
-              player.token === guesserToken
-                ? { ...player, score: player.score + 1 }
-                : player,
-            )
-      const optimisticMe =
-        !state.me || guesserToken === null || state.me.token !== guesserToken
-          ? state.me
-          : { ...state.me, score: state.me.score + 1 }
-
-      if (isDeckComplete) {
-        const nextTurnToken =
-          state.players.find((player) => player.token !== state.session.turnToken)?.token ??
-          state.session.turnToken
-
-        localStore.setQuery(
-          api.lipReading.getState,
-          { code: args.code, playerToken: args.playerToken },
-          {
-            ...state,
-            session: {
-              ...state.session,
-              phase: 'round_over',
-              turnToken: nextTurnToken,
-              roundEndsAt: null,
-              deckCardIds: [],
-              deckCursor: 0,
-            },
-            players: optimisticPlayers.map((player) => ({
-              ...player,
-              isTurn: player.token === nextTurnToken,
-              isGuesser: false,
-            })),
-            me: optimisticMe
-              ? {
-                  ...optimisticMe,
-                  isTurn: optimisticMe.token === nextTurnToken,
-                  isGuesser: false,
-                }
-              : null,
-            activeCardId: null,
-            activeCardText: null,
-            roundExpired: false,
-          },
-        )
-        return
-      }
-
-      localStore.setQuery(
-        api.lipReading.getState,
-        { code: args.code, playerToken: args.playerToken },
-        {
-          ...state,
-          session: {
-            ...state.session,
-            deckCursor: nextCursor,
-          },
-          players: optimisticPlayers,
-          me: optimisticMe,
-          activeCardId: state.session.deckCardIds[nextCursor] ?? null,
-          activeCardText: null,
-          roundExpired: false,
-        },
-      )
-    },
-  )
-  const endRound = useMutation(api.lipReading.endRound)
-  const resetScores = useMutation(api.lipReading.resetScores).withOptimisticUpdate(
-    (localStore, args) => {
-      const state = localStore.getQuery(api.lipReading.getState, {
-        code: args.code,
-        playerToken: args.playerToken,
-      })
-      if (!state) {
-        return
-      }
-
-      localStore.setQuery(
-        api.lipReading.getState,
-        { code: args.code, playerToken: args.playerToken },
-        {
-          ...state,
-          players: state.players.map((player) => ({ ...player, score: 0 })),
-          me: state.me ? { ...state.me, score: 0 } : null,
-        },
-      )
-    },
-  )
-  const roomCode = useMemo(() => normalizeCode(activeCode), [activeCode])
-  const shouldLoadCards = showCardsPanel || roomCode.length > 0
-  const sharedCards = useQuery(api.lipReading.listCards, shouldLoadCards ? {} : 'skip')
-  const canQueryRoom = roomCode.length > 0 && playerToken.length > 0
-  const state = useQuery(
-    api.lipReading.getState,
-    canQueryRoom ? { code: roomCode, playerToken } : 'skip',
-  )
-
-  const me = state?.me ?? null
-  const players = state?.players ?? []
-  const cards = sharedCards ?? []
-  const cardsById = useMemo(
-    () => new Map(cards.map((card) => [card.id, card])),
-    [cards],
-  )
-  const [myPlayer, otherPlayer] = useMemo(() => {
-    const mine = players.find((player) => player.token === playerToken) ?? null
-    const other = players.find((player) => player.token !== playerToken) ?? null
-    return [mine, other]
-  }, [players, playerToken])
-  const myScore = myPlayer?.score ?? 0
-  const theirScore = otherPlayer?.score ?? 0
-  const phase = state?.session.phase ?? 'lobby'
-  const sessionId = state?.session.id ?? null
-  const shouldTickRoundClock = phase === 'round'
-  const canHeartbeat = Boolean(roomCode && me && sessionId)
-
-  const roundEndsAt = state?.session.roundEndsAt ?? null
-  const roundNumber = state?.session.roundNumber ?? 0
-  const localRoundExpired =
-    phase === 'round' && typeof roundEndsAt === 'number' && roundEndsAt <= now
-  const secondsLeft =
-    roundEndsAt && state?.session.phase === 'round'
-      ? Math.max(0, Math.ceil((roundEndsAt - now) / 1000))
-      : state?.session.roundDurationSeconds ?? durationSeconds
-  const timerProgress =
-    state?.session.phase === 'round' && state.session.roundDurationSeconds > 0
-      ? Math.min(100, Math.max(0, (secondsLeft / state.session.roundDurationSeconds) * 100))
-      : 100
-  const activeCardText =
-    phase === 'round' && me?.isTurn
-      ? (() => {
-          const activeCardId = state?.activeCardId
-          if (!activeCardId) {
-            return 'Loading card...'
-          }
-          return cardsById.get(activeCardId)?.text ?? state.activeCardText ?? 'Loading card...'
-        })()
-      : ''
-
-  const triggerSparkles = () => {
-    const newSparkles = Array.from({ length: 8 }, (_, index) => ({
-      id: Date.now() + index,
-      x: 30 + Math.random() * 40,
-      y: 22 + Math.random() * 58,
-      color: CARD_COLORS[Math.floor(Math.random() * CARD_COLORS.length)],
-      tx: `${(Math.random() - 0.5) * 80}px`,
-      ty: `${-35 - Math.random() * 55}px`,
-    }))
-    setSparkles(newSparkles)
-    window.setTimeout(() => setSparkles([]), 700)
-  }
-
+  useEffect(() => { void ensureCards({}).catch(() => {}) }, [ensureCards])
+  useEffect(() => { persistPlayerName(name) }, [name])
+  useEffect(() => { code ? ss(LIP_ROOM_STORAGE_KEY, code) : sd(LIP_ROOM_STORAGE_KEY) }, [code])
   useEffect(() => {
-    const link = document.createElement('link')
-    link.rel = 'stylesheet'
-    link.href = 'https://fonts.googleapis.com/css2?family=Fredoka+One&family=Nunito:wght@400;600;700;800&display=swap'
-    document.head.appendChild(link)
-    return () => {
-      document.head.removeChild(link)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!shouldLoadCards) {
+    if (!joinCode) {
       return
     }
 
-    void ensureCardsInitialized({}).catch(() => undefined)
-  }, [shouldLoadCards, ensureCardsInitialized])
-
+    setRoomInput((current) => current || norm(joinCode))
+  }, [joinCode])
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(t) }, [])
   useEffect(() => {
-    safeStorageSet(NAME_STORAGE_KEY, name)
-  }, [name])
-
+    if (!state?.session?.id || !code) return
+    const id = state.session.id
+    const ping = () => void heartbeatPresence({ sessionId: id, playerToken: token }).catch(() => {})
+    ping(); const t = setInterval(ping, 8000); return () => clearInterval(t)
+  }, [state?.session?.id, code, token, heartbeatPresence])
   useEffect(() => {
-    const normalized = normalizeCode(activeCode)
-    if (normalized) {
-      safeStorageSet(ROOM_STORAGE_KEY, normalized)
-      return
+    if (code && state === null) {
+      setFeedback('Session not found.')
+      setActiveCode('')
+      sd(LIP_ROOM_STORAGE_KEY)
     }
-    safeStorageRemove(ROOM_STORAGE_KEY)
-  }, [activeCode])
-
-  useEffect(() => {
-    if (!shouldTickRoundClock) {
-      setNow(Date.now())
-      return
-    }
-
-    const timerId = window.setInterval(() => {
-      setNow(Date.now())
-    }, 500)
-    return () => window.clearInterval(timerId)
-  }, [shouldTickRoundClock])
-
-  useEffect(() => {
-    const syncNow = () => setNow(Date.now())
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        syncNow()
-      }
-    }
-    window.addEventListener('focus', syncNow)
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    return () => {
-      window.removeEventListener('focus', syncNow)
-      document.removeEventListener('visibilitychange', onVisibilityChange)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!canHeartbeat || !sessionId) {
-      return
-    }
-
-    const ping = () => {
-      void heartbeatPresence({ sessionId, playerToken }).catch(() => undefined)
-    }
-
-    ping()
-    const intervalId = window.setInterval(ping, HEARTBEAT_INTERVAL_MS)
-    return () => window.clearInterval(intervalId)
-  }, [canHeartbeat, sessionId, playerToken, heartbeatPresence])
-
-  useEffect(() => {
-    if (
-      !state ||
-      !me ||
-      state.session.phase !== 'round' ||
-      !localRoundExpired ||
-      !me.isTurn ||
-      !roomCode
-    ) {
-      endingRoundRef.current = false
-      return
-    }
-
-    if (endingRoundRef.current) {
-      return
-    }
-    endingRoundRef.current = true
-
-    void endRound({ code: roomCode, playerToken }).catch(() => {
-      endingRoundRef.current = false
-    })
-  }, [state, me, localRoundExpired, roomCode, playerToken, endRound])
-
-  useEffect(() => {
-    if (!canQueryRoom || state !== null) {
-      return
-    }
-
-    setFeedback('Room not found, or you are no longer in this room.')
-    setActiveCode('')
-    safeStorageRemove(ROOM_STORAGE_KEY)
-  }, [canQueryRoom, state])
+  }, [code, state])
 
   const clearRoom = () => {
     setActiveCode('')
-    safeStorageRemove(ROOM_STORAGE_KEY)
-    setShowCardsPanel(false)
+    sd(LIP_ROOM_STORAGE_KEY)
   }
 
-  const onCreate = async (event: FormEvent) => {
-    event.preventDefault()
-    const trimmedName = name.trim()
-    if (!trimmedName) {
-      setFeedback('Enter your name first.')
+  const onLeaveRoom = async () => {
+    const currentCode = code
+    clearRoom()
+    if (!currentCode) {
+      return
+    }
+
+    setWorkingAction('leave')
+    try {
+      await leaveSession({ code: currentCode, playerToken: token })
+    } catch (error) {
+      setFeedback(em(error))
+    } finally {
+      setWorkingAction('')
+    }
+  }
+
+  const players = state?.players ?? []
+  const sess = state?.session
+  const isMyTurn = sess?.turnToken === token
+  const timeLeft = sess?.roundEndsAt ? Math.max(0, Math.ceil((sess.roundEndsAt - now) / 1000)) : null
+  const urgent = timeLeft !== null && timeLeft <= 10
+  const inviteUrl = useMemo(() => buildInviteUrl(code, 'lip-reading'), [code])
+  const showCombinedEntryScreen = !code || players.length < 2
+  const joinedName = state?.me?.name ?? name.trim()
+  const inviteStatus = players.length === 0 ? 'Setting up room' : 'Waiting for player 2'
+  const nameChangesApplyNextTime = Boolean(state?.me?.name && name.trim() && state.me.name !== name.trim())
+
+  const onCreate = async () => {
+    if (!name.trim()) {
+      setFeedback('Please enter your name.')
       return
     }
 
     setWorkingAction('create')
     setFeedback('')
     try {
-      const result = await createSession({ name: trimmedName, playerToken })
+      const result = await createSession({ name: name.trim(), playerToken: token })
       setActiveCode(result.code)
       setRoomInput(result.code)
     } catch (error) {
-      setFeedback(getErrorMessage(error))
+      setFeedback(em(error))
     } finally {
       setWorkingAction('')
     }
   }
 
-  const onJoin = async (event: FormEvent) => {
-    event.preventDefault()
-    const trimmedName = name.trim()
-    const normalizedInput = normalizeCode(roomInput)
-    if (!trimmedName) {
-      setFeedback('Enter your name first.')
+  const onJoin = async () => {
+    const normalizedInput = norm(roomInput || joinCode)
+    if (!name.trim()) {
+      setFeedback('Please enter your name.')
       return
     }
     if (!normalizedInput) {
@@ -529,924 +1225,127 @@ function LipReadGame() {
     setWorkingAction('join')
     setFeedback('')
     try {
-      const result = await joinSession({
-        code: normalizedInput,
-        name: trimmedName,
-        playerToken,
-      })
+      const result = await joinSession({ code: normalizedInput, name: name.trim(), playerToken: token })
       setActiveCode(result.code)
       setRoomInput(result.code)
     } catch (error) {
-      setFeedback(getErrorMessage(error))
+      setFeedback(em(error))
     } finally {
       setWorkingAction('')
     }
   }
 
-  const onLeaveRoom = async () => {
-    if (!roomCode) {
-      clearRoom()
-      return
-    }
-
-    const roomCodeToLeave = roomCode
-    setWorkingAction('leave')
-    setFeedback('')
-    clearRoom()
-    setWorkingAction('')
-    void leaveSession({ code: roomCodeToLeave, playerToken }).catch((error) => {
-      setFeedback(getErrorMessage(error))
-    })
-  }
-
-  const onAddCard = async (event: FormEvent) => {
-    event.preventDefault()
-    const hasAnyLine = cardDraft
-      .split(/\r?\n/)
-      .some((line) => line.trim().length > 0)
-    if (!hasAnyLine) {
-      setFeedback('Type a card phrase first.')
-      return
-    }
-
-    setWorkingAction('card')
-    setFeedback('')
-    try {
-      await addCard({ playerToken, text: cardDraft })
-      setCardDraft('')
-    } catch (error) {
-      setFeedback(getErrorMessage(error))
-    } finally {
-      setWorkingAction('')
-    }
-  }
-
-  const onDeleteCard = async (cardId: Id<'cards'>) => {
-    setWorkingAction(`delete:${cardId}`)
-    setFeedback('')
-    try {
-      await deleteCard({ playerToken, cardId })
-    } catch (error) {
-      setFeedback(getErrorMessage(error))
-    } finally {
-      setWorkingAction('')
-    }
-  }
-
-  const onStartRound = async () => {
-    if (!roomCode) {
-      return
-    }
-    setWorkingAction('start')
-    setFeedback('')
-    try {
-      await startRound({
-        code: roomCode,
-        playerToken,
-        durationSeconds,
-      })
-    } catch (error) {
-      setFeedback(getErrorMessage(error))
-    } finally {
-      setWorkingAction('')
-    }
-  }
-
-  const onCardResult = (result: 'correct' | 'skip') => {
-    if (!roomCode || !state?.activeCardId || localRoundExpired) {
-      if (roomCode && me?.isTurn && localRoundExpired) {
-        void endRound({ code: roomCode, playerToken }).catch(() => undefined)
-      }
-      return
-    }
-
-    setFeedback('')
-    if (result === 'correct') {
-      triggerSparkles()
-    }
-    void markCardResult({ code: roomCode, playerToken, result }).catch((error) => {
-      setFeedback(getErrorMessage(error))
-    })
-  }
-
-  const onResetScores = async () => {
-    if (!roomCode) {
-      return
-    }
-    setWorkingAction('reset')
-    setFeedback('')
-    try {
-      await resetScores({ code: roomCode, playerToken })
-    } catch (error) {
-      setFeedback(getErrorMessage(error))
-    } finally {
-      setWorkingAction('')
-    }
-  }
-
-  const css = `
-    @keyframes bounceIn {
-      0% { transform: scale(0.7) rotate(-3deg); opacity: 0; }
-      50% { transform: scale(1.08) rotate(1deg); }
-      70% { transform: scale(0.96) rotate(-0.5deg); }
-      100% { transform: scale(1) rotate(0deg); opacity: 1; }
-    }
-    @keyframes sparkle {
-      0% { transform: scale(0) translate(0,0); opacity: 1; }
-      100% { transform: scale(1.5) translate(var(--tx), var(--ty)); opacity: 0; }
-    }
-    @keyframes slideUp {
-      from { opacity: 0; transform: translateY(26px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-    @keyframes drawerUp {
-      from { opacity: 0; transform: translateX(-50%) translateY(26px); }
-      to { opacity: 1; transform: translateX(-50%) translateY(0); }
-    }
-    @keyframes float {
-      0%,100% { transform: translateY(0px) rotate(-2deg); }
-      50% { transform: translateY(-10px) rotate(2deg); }
-    }
-    button { cursor: pointer; transition: transform 0.15s cubic-bezier(0.34,1.56,0.64,1), filter 0.15s ease; }
-    button:hover { transform: scale(1.04); }
-    button:active { transform: scale(0.97); }
-    input:focus, textarea:focus { outline: none; border-color: #333 !important; }
-    input, textarea { font-size: 16px !important; }
-  `
-
-  const pageStyle: CSSProperties = {
-    position: 'fixed',
-    inset: 0,
-    background: '#FAFAFA',
-    fontFamily: "'Nunito', sans-serif",
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
-  }
-
-  if (!roomCode) {
+  if (showCombinedEntryScreen) {
     return (
-      <div style={{ ...pageStyle, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-        <style>{css}</style>
-        <button
-          onClick={() => setShowCardsPanel((value) => !value)}
-          style={{
-            position: 'absolute',
-            top: 16,
-            right: 16,
-            height: 44,
-            padding: '0 14px',
-            background: CARD_COLORS[8],
-            color: '#fff',
-            border: '3px solid #222',
-            borderRadius: 12,
-            fontFamily: "'Fredoka One', sans-serif",
-            fontSize: 15,
-            boxShadow: '3px 3px 0 #222',
-            zIndex: 3,
-          }}
-        >
-          Cards
-        </button>
-        {CARD_COLORS.slice(0, 8).map((color, index) => (
-          <div
-            key={color}
-            style={{
-              position: 'absolute',
-              width: `${44 + index * 18}px`,
-              height: `${44 + index * 18}px`,
-              borderRadius: index % 2 === 0 ? '50%' : '14px',
-              background: color,
-              opacity: 0.12,
-              top: `${6 + index * 11}%`,
-              right: index % 2 === 0 ? `${2 + index * 4}%` : undefined,
-              left: index % 2 !== 0 ? `${2 + index * 3}%` : undefined,
-              animation: `float ${3 + index * 0.45}s ease-in-out infinite`,
-              animationDelay: `${index * 0.2}s`,
-            }}
-          />
-        ))}
-
-        <div style={{ width: '100%', maxWidth: 420, zIndex: 1 }}>
-          <div style={{ textAlign: 'center', marginBottom: 28, animation: 'bounceIn 0.6s cubic-bezier(0.34,1.56,0.64,1)' }}>
-            <div
-              style={{
-                display: 'inline-block',
-                background: CARD_COLORS[0],
-                borderRadius: 24,
-                padding: '16px 30px',
-                boxShadow: '6px 6px 0 #222',
-                border: '3px solid #222',
-                marginBottom: 12,
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: "'Fredoka One', sans-serif",
-                  fontSize: 'clamp(34px,9vw,52px)',
-                  color: '#fff',
-                  lineHeight: 1,
-                }}
-              >
-                Lip Read!
-              </div>
-            </div>
-            <div style={{ fontWeight: 700, color: '#666', fontSize: 14 }}>
-              realtime room play with Convex
-            </div>
-          </div>
-
-          <form
-            onSubmit={onCreate}
-            style={{
-              background: '#fff',
-              borderRadius: 20,
-              border: '3px solid #222',
-              boxShadow: '5px 5px 0 #222',
-              padding: 22,
-              marginBottom: 14,
-              animation: 'slideUp 0.45s 0.05s ease both',
-            }}
-          >
-            <div style={{ fontWeight: 800, fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#888', marginBottom: 8 }}>
-              Your Name
-            </div>
-            <input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              maxLength={24}
-              placeholder="Player name"
-              style={{
-                width: '100%',
-                height: 50,
-                border: '3px solid #222',
-                borderRadius: 14,
-                padding: '0 14px',
-                fontFamily: "'Nunito', sans-serif",
-                fontSize: 15,
-                fontWeight: 700,
-                color: '#222',
-                marginBottom: 12,
-                boxShadow: '3px 3px 0 #222',
-              }}
-            />
-            <button
-              type="submit"
-              disabled={workingAction === 'create'}
-              style={{
-                width: '100%',
-                height: 52,
-                background: CARD_COLORS[0],
-                color: '#fff',
-                border: '3px solid #222',
-                borderRadius: 14,
-                fontFamily: "'Fredoka One', sans-serif",
-                fontSize: 20,
-                boxShadow: '4px 4px 0 #222',
-              }}
-            >
-              {workingAction === 'create' ? 'Creating…' : 'Create Room'}
-            </button>
-          </form>
-
-          <form
-            onSubmit={onJoin}
-            style={{ display: 'flex', gap: 10, animation: 'slideUp 0.45s 0.12s ease both' }}
-          >
-            <input
-              value={roomInput}
-              onChange={(event) => setRoomInput(normalizeCode(event.target.value))}
-              maxLength={8}
-              placeholder="enter room code…"
-              style={{
-                flex: 1,
-                height: 52,
-                border: '3px solid #222',
-                borderRadius: 14,
-                fontFamily: "'Nunito', sans-serif",
-                fontWeight: 800,
-                fontSize: 15,
-                padding: '0 14px',
-                color: '#222',
-                background: '#fff',
-                boxShadow: '4px 4px 0 #222',
-              }}
-            />
-            <button
-              type="submit"
-              disabled={workingAction === 'join'}
-              style={{
-                height: 52,
-                padding: '0 22px',
-                background: CARD_COLORS[3],
-                color: '#fff',
-                border: '3px solid #222',
-                borderRadius: 14,
-                fontFamily: "'Fredoka One', sans-serif",
-                fontSize: 18,
-                boxShadow: '4px 4px 0 #222',
-              }}
-            >
-              {workingAction === 'join' ? '…' : 'Join!'}
-            </button>
-          </form>
-
-          {feedback ? (
-            <p style={{ marginTop: 12, marginBottom: 0, color: '#B42318', fontWeight: 700 }}>
-              {feedback}
-            </p>
-          ) : null}
-        </div>
-
-        {showCardsPanel ? (
-          <div
-            style={{
-              position: 'absolute',
-              left: '50%',
-              transform: 'translateX(-50%)',
-              bottom: 10,
-              width: 'min(768px, calc(100% - 20px))',
-              maxHeight: '62vh',
-              background: '#fff',
-              border: '4px solid #222',
-              borderRadius: 20,
-              boxShadow: '6px 6px 0 #222',
-              padding: 14,
-              overflow: 'hidden',
-              display: 'flex',
-              flexDirection: 'column',
-              animation: 'drawerUp 0.24s ease',
-              zIndex: 30,
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-              <div style={{ fontFamily: "'Fredoka One', sans-serif", fontSize: 24, color: '#333' }}>
-                Cards ({cards.length})
-              </div>
-              <button
-                onClick={() => setShowCardsPanel(false)}
-                style={{
-                  height: 34,
-                  padding: '0 10px',
-                  border: '3px solid #222',
-                  borderRadius: 10,
-                  background: '#fff',
-                  color: '#222',
-                  fontFamily: "'Fredoka One', sans-serif",
-                  fontSize: 14,
-                }}
-              >
-                Close
-              </button>
-            </div>
-
-            <form onSubmit={onAddCard} style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
-              <textarea
-                value={cardDraft}
-                onChange={(event) => setCardDraft(event.target.value)}
-                placeholder={'Add card phrases (one per line)\nExample:\nMovie night\nIce cream'}
-                maxLength={1200}
-                rows={4}
-                style={{
-                  width: '100%',
-                  minHeight: 84,
-                  border: '3px solid #222',
-                  borderRadius: 12,
-                  padding: '8px 12px',
-                  fontSize: 14,
-                  fontWeight: 700,
-                  color: '#222',
-                  resize: 'vertical',
-                  fontFamily: "'Nunito', sans-serif",
-                }}
-              />
-              <button
-                type="submit"
-                disabled={workingAction === 'card'}
-                style={{
-                  height: 42,
-                  padding: '0 14px',
-                  border: '3px solid #222',
-                  borderRadius: 12,
-                  background: CARD_COLORS[2],
-                  color: '#222',
-                  fontFamily: "'Fredoka One', sans-serif",
-                  fontSize: 16,
-                  alignSelf: 'flex-end',
-                }}
-              >
-                {workingAction === 'card' ? 'Adding…' : 'Add Cards'}
-              </button>
-            </form>
-
-            <div style={{ overflow: 'auto', borderRadius: 12, border: '2px solid #222', padding: 8, background: '#FAFAFA' }}>
-              {cards.map((card) => (
-                <div
-                  key={card.id}
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    gap: 10,
-                    padding: '8px 10px',
-                    marginBottom: 6,
-                    borderRadius: 10,
-                    border: '2px solid #222',
-                    background: '#fff',
-                    color: '#222',
-                  }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 800, color: '#222' }}>{card.text}</div>
-                    <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', color: '#888' }}>
-                      {card.source}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void onDeleteCard(card.id)}
-                    disabled={workingAction === `delete:${card.id}`}
-                    style={{
-                      height: 34,
-                      padding: '0 10px',
-                      border: '3px solid #222',
-                      borderRadius: 10,
-                      background: '#fff',
-                      color: '#B42318',
-                      fontFamily: "'Fredoka One', sans-serif",
-                      fontSize: 12,
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {workingAction === `delete:${card.id}` ? 'Deleting…' : 'Delete'}
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </div>
+      <Shell title="Lip Read" subtitle={code ? `Room · ${code}` : undefined} onBack={onBack} onExit={code ? () => { void onLeaveRoom() } : onBack}>
+        <CombinedEntryPanel
+          name={name}
+          roomInput={roomInput}
+          roomCode={code}
+          inviteUrl={inviteUrl}
+          feedback={feedback}
+          joinedName={joinedName}
+          inviteStatus={inviteStatus}
+          playersCount={Math.max(players.length, code ? 1 : 0)}
+          workingAction={workingAction}
+          nameChangesApplyNextTime={nameChangesApplyNextTime}
+          onNameChange={setName}
+          onRoomInputChange={setRoomInput}
+          onCreate={() => void onCreate()}
+          onJoin={() => void onJoin()}
+          onLeaveRoom={() => { void onLeaveRoom() }}
+        />
+      </Shell>
     )
   }
 
-  const loadingRoom = state === undefined
-
   return (
-    <div style={pageStyle}>
-      <style>{css}</style>
-
-      {sparkles.map((sparkle) => (
-        <div
-          key={sparkle.id}
-          style={
-            {
-              position: 'fixed',
-              left: `${sparkle.x}%`,
-              top: `${sparkle.y}%`,
-              width: 16,
-              height: 16,
-              borderRadius: '50%',
-              background: sparkle.color,
-              zIndex: 100,
-              animation: 'sparkle 0.7s ease forwards',
-              '--tx': sparkle.tx,
-              '--ty': sparkle.ty,
-            } as CSSProperties
-          }
-        />
-      ))}
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 16px 10px', gap: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ fontFamily: "'Fredoka One', sans-serif", fontSize: 24, color: '#333' }}>Lip Read!</div>
-          <div
-            style={{
-              border: '2px solid #222',
-              borderRadius: 12,
-              padding: '5px 10px',
-              fontFamily: "'Fredoka One', sans-serif",
-              fontSize: 12,
-              background: '#fff',
-              color: '#222',
-            }}
-          >
-            {roomCode}
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            onClick={() => setShowCardsPanel((value) => !value)}
-            style={{
-              height: 42,
-              padding: '0 14px',
-              background: CARD_COLORS[8],
-              color: '#fff',
-              border: '3px solid #222',
-              borderRadius: 12,
-              fontFamily: "'Fredoka One', sans-serif",
-              fontSize: 15,
-              boxShadow: '3px 3px 0 #222',
-            }}
-          >
-            Cards
-          </button>
-          <button
-            onClick={onLeaveRoom}
-            disabled={workingAction === 'leave'}
-            style={{
-              height: 42,
-              padding: '0 14px',
-              background: '#fff',
-              color: '#222',
-              border: '3px solid #222',
-              borderRadius: 12,
-              fontFamily: "'Fredoka One', sans-serif",
-              fontSize: 15,
-              boxShadow: '3px 3px 0 #222',
-            }}
-          >
-            {workingAction === 'leave' ? 'Leaving…' : 'Exit'}
-          </button>
-        </div>
+    <Shell title="Lip Read" subtitle={`Room · ${code}`} onBack={onBack} onExit={() => { void onLeaveRoom() }}>
+      {/* Scores */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }} className="a2">
+        {players.map(p => (
+          <Card key={p.token} style={{ flex: 1, minWidth: 130, padding: '18px 20px' }}>
+            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: S.muted, marginBottom: 6 }}>
+              {p.token === token ? 'You' : 'Opponent'}
+            </div>
+            <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 52, lineHeight: 1, color: p.token === token ? S.accent : S.ink }}>
+              <AnimNum value={p.score} />
+            </div>
+            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, color: S.muted, marginTop: 4 }}>{p.name}</div>
+          </Card>
+        ))}
       </div>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 16px 10px', gap: 10 }}>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <div
-            style={{
-              background: CARD_COLORS[0],
-              border: '3px solid #222',
-              borderRadius: 12,
-              padding: '4px 14px',
-              textAlign: 'center',
-              boxShadow: '3px 3px 0 #222',
-            }}
-          >
-            <div style={{ fontFamily: "'Fredoka One', sans-serif", fontSize: 22, color: '#fff', lineHeight: 1 }}>
-              {myScore}
-            </div>
-            <div style={{ fontSize: 9, fontWeight: 800, color: 'rgba(255,255,255,0.8)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-              You
-            </div>
+      {/* Timer bar */}
+      {timeLeft !== null && sess?.phase === 'round' && (
+        <div className="a3" style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: S.muted }}>Time</span>
+            <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 14, fontWeight: 500, color: urgent ? S.accent : S.ink, transition: 'color 0.5s ease' }}>{timeLeft}s</span>
           </div>
-          <div
-            style={{
-              background: CARD_COLORS[1],
-              border: '3px solid #222',
-              borderRadius: 12,
-              padding: '4px 14px',
-              textAlign: 'center',
-              boxShadow: '3px 3px 0 #222',
-            }}
-          >
-            <div style={{ fontFamily: "'Fredoka One', sans-serif", fontSize: 22, color: '#fff', lineHeight: 1 }}>
-              {theirScore}
-            </div>
-            <div style={{ fontSize: 9, fontWeight: 800, color: 'rgba(255,255,255,0.8)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-              Them
-            </div>
-          </div>
+          <ProgressLine value={timeLeft} max={60} color={urgent ? S.accent : S.ink} />
         </div>
-        <div
-          style={{
-            border: '3px solid #222',
-            borderRadius: 12,
-            background: otherPlayer ? (otherPlayer.isOnline ? '#CCFCEB' : '#F8E6E6') : '#fff',
-            padding: '7px 11px',
-            fontSize: 12,
-            fontWeight: 800,
-            color: '#333',
-            boxShadow: '3px 3px 0 #222',
-          }}
-        >
-          {otherPlayer ? `${otherPlayer.name}: ${otherPlayer.isOnline ? 'online' : 'away'}` : 'waiting for player 2'}
-        </div>
-      </div>
+      )}
 
-      <div
-        style={{
-          height: 10,
-          background: '#eee',
-          margin: '0 16px',
-          borderRadius: 6,
-          border: '2px solid #222',
-          overflow: 'hidden',
-          flexShrink: 0,
-        }}
-      >
-        <div
-          style={{
-            height: '100%',
-            background: CARD_COLORS[4],
-            width: `${timerProgress}%`,
-            transition: 'width 0.45s linear',
-            borderRadius: 4,
-          }}
-        />
-      </div>
-
-      <div style={{ textAlign: 'center', paddingTop: 8, fontSize: 13, fontWeight: 800, color: '#666' }}>
-        {loadingRoom
-          ? 'Loading room…'
-          : phase === 'round'
-            ? `Round ${roundNumber} · ${formatSeconds(secondsLeft)}`
-            : phase === 'round_over'
-              ? `Round ${roundNumber} complete`
-              : 'Lobby'}
-      </div>
-
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', padding: '20px 16px' }}>
-        <div
-          style={{
-            position: 'absolute',
-            width: 'min(360px, 88vw)',
-            aspectRatio: '3/2',
-            background: CARD_COLORS[7],
-            borderRadius: 28,
-            border: '4px solid #222',
-            transform: 'rotate(3deg) translateY(7px)',
-            opacity: 0.35,
-          }}
-        />
-        <div
-          style={{
-            position: 'relative',
-            width: 'min(360px, 88vw)',
-            aspectRatio: '3/2',
-            background: CARD_COLORS[0],
-            borderRadius: 28,
-            border: '4px solid #222',
-            boxShadow: '8px 8px 0 #222',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            textAlign: 'center',
-            padding: '24px 26px',
-            animation: 'bounceIn 0.45s cubic-bezier(0.34,1.56,0.64,1)',
-          }}
-        >
-          <div style={{ position: 'absolute', top: 12, left: 16, fontFamily: "'Fredoka One', sans-serif", fontSize: 14, color: 'rgba(255,255,255,0.6)' }}>
-            {phase === 'round' && me?.isTurn ? 'Reader view' : 'Game'}
-          </div>
-          <div style={{ position: 'absolute', top: 12, right: 16, fontFamily: "'Nunito', sans-serif", fontSize: 11, fontWeight: 800, color: 'rgba(255,255,255,0.55)' }}>
-            {roomCode}
-          </div>
-          <div
-            style={{
-              fontFamily: "'Fredoka One', sans-serif",
-              fontSize: 'clamp(27px,8vw,50px)',
-              color: '#fff',
-              lineHeight: 1.1,
-              letterSpacing: '0.02em',
-              WebkitTextStroke: '1px rgba(0,0,0,0.15)',
-            }}
-          >
-            {loadingRoom
-              ? 'Loading…'
-                : phase !== 'round'
-                  ? players.length === 2
-                    ? me?.isHost
-                      ? 'Start the next round'
-                      : 'Waiting for host to start'
-                  : 'Need 2 players'
-                : me?.isTurn
-                  ? activeCardText
-                  : 'Guess out loud while your teammate mouths the card!'}
-          </div>
-        </div>
-      </div>
-
-      {feedback ? (
-        <div style={{ margin: '0 16px 10px', padding: '10px 12px', borderRadius: 12, border: '3px solid #222', boxShadow: '3px 3px 0 #222', background: '#fff', color: '#B42318', fontSize: 13, fontWeight: 800 }}>
-          {feedback}
-        </div>
-      ) : null}
-
-      {phase === 'round' && me?.isTurn ? (
-        <div style={{ display: 'flex', gap: 12, padding: '0 16px 22px', flexShrink: 0 }}>
-          <button
-            onClick={() => onCardResult('skip')}
-            disabled={localRoundExpired}
-            style={{
-              flex: 1,
-              height: 62,
-              background: '#fff',
-              color: '#555',
-              border: '4px solid #222',
-              borderRadius: 20,
-              fontFamily: "'Fredoka One', sans-serif",
-              fontSize: 20,
-              boxShadow: '4px 4px 0 #222',
-            }}
-          >
-            😬 Pass
-          </button>
-          <button
-            onClick={() => onCardResult('correct')}
-            disabled={localRoundExpired}
-            style={{
-              flex: 2,
-              height: 62,
-              background: '#333',
-              color: '#fff',
-              border: '4px solid #222',
-              borderRadius: 20,
-              fontFamily: "'Fredoka One', sans-serif",
-              fontSize: 22,
-              boxShadow: '4px 4px 0 #222',
-            }}
-          >
-            ✓ Got it!
-          </button>
-        </div>
-      ) : null}
-
-      {phase !== 'round' && me?.isHost ? (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '0 16px 16px', flexWrap: 'wrap' }}>
-          {[45, 60, 90].map((duration) => (
-            <button
-              key={duration}
-              onClick={() => setDurationSeconds(duration)}
-              style={{
-                height: 40,
-                padding: '0 14px',
-                border: '3px solid #222',
-                borderRadius: 12,
-                background: durationSeconds === duration ? CARD_COLORS[5] : '#fff',
-                color: durationSeconds === duration ? '#fff' : '#333',
-                fontFamily: "'Fredoka One', sans-serif",
-                fontSize: 16,
-                boxShadow: '3px 3px 0 #222',
-              }}
-            >
-              {duration}s
-            </button>
-          ))}
-          <button
-            onClick={onStartRound}
-            disabled={workingAction === 'start' || players.length !== 2}
-            style={{
-              height: 40,
-              padding: '0 16px',
-              border: '3px solid #222',
-              borderRadius: 12,
-              background: CARD_COLORS[0],
-              color: '#fff',
-              fontFamily: "'Fredoka One', sans-serif",
-              fontSize: 16,
-              boxShadow: '3px 3px 0 #222',
-              opacity: players.length === 2 ? 1 : 0.6,
-            }}
-          >
-            {workingAction === 'start' ? 'Starting…' : 'Start round'}
-          </button>
-          <button
-            onClick={onResetScores}
-            disabled={workingAction === 'reset'}
-            style={{
-              height: 40,
-              padding: '0 16px',
-              border: '3px solid #222',
-              borderRadius: 12,
-              background: '#fff',
-              color: '#333',
-              fontFamily: "'Fredoka One', sans-serif",
-              fontSize: 16,
-              boxShadow: '3px 3px 0 #222',
-            }}
-          >
-            {workingAction === 'reset' ? 'Resetting…' : 'Reset scores'}
-          </button>
-        </div>
-      ) : null}
-
-      {showCardsPanel ? (
-        <div
-          style={{
-            position: 'absolute',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            bottom: 10,
-            width: 'min(768px, calc(100% - 20px))',
-            maxHeight: '62vh',
-            background: '#fff',
-            border: '4px solid #222',
-            borderRadius: 20,
-            boxShadow: '6px 6px 0 #222',
-            padding: 14,
-            overflow: 'hidden',
-            display: 'flex',
-            flexDirection: 'column',
-            animation: 'drawerUp 0.24s ease',
-            zIndex: 30,
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-            <div style={{ fontFamily: "'Fredoka One', sans-serif", fontSize: 24, color: '#333' }}>
-              Cards ({cards.length})
-            </div>
-            <button
-              onClick={() => setShowCardsPanel(false)}
-              style={{
-                height: 34,
-                padding: '0 10px',
-                border: '3px solid #222',
-                borderRadius: 10,
-                background: '#fff',
-                color: '#222',
-                fontFamily: "'Fredoka One', sans-serif",
-                fontSize: 14,
-              }}
-            >
-              Close
-            </button>
-          </div>
-
-          <form onSubmit={onAddCard} style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
-            <textarea
-              value={cardDraft}
-              onChange={(event) => setCardDraft(event.target.value)}
-              placeholder={'Add card phrases (one per line)\nExample:\nMovie night\nIce cream'}
-              maxLength={1200}
-              rows={4}
-              style={{
-                width: '100%',
-                minHeight: 84,
-                border: '3px solid #222',
-                borderRadius: 12,
-                padding: '8px 12px',
-                fontSize: 14,
-                fontWeight: 700,
-                color: '#222',
-                resize: 'vertical',
-                fontFamily: "'Nunito', sans-serif",
-              }}
-            />
-            <button
-              type="submit"
-              disabled={workingAction === 'card'}
-              style={{
-                height: 42,
-                padding: '0 14px',
-                border: '3px solid #222',
-                borderRadius: 12,
-                background: CARD_COLORS[2],
-                color: '#222',
-                fontFamily: "'Fredoka One', sans-serif",
-                fontSize: 16,
-                alignSelf: 'flex-end',
-              }}
-            >
-              {workingAction === 'card' ? 'Adding…' : 'Add Cards'}
-            </button>
-          </form>
-
-          <div style={{ overflow: 'auto', borderRadius: 12, border: '2px solid #222', padding: 8, background: '#FAFAFA' }}>
-            {cards.map((card) => (
-              <div
-                key={card.id}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '8px 10px',
-                  marginBottom: 6,
-                  borderRadius: 10,
-                  border: '2px solid #222',
-                  background: '#fff',
-                  color: '#222',
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 800, color: '#222' }}>{card.text}</div>
-                  <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', color: '#888' }}>
-                    {card.source}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void onDeleteCard(card.id)}
-                  disabled={workingAction === `delete:${card.id}`}
-                  style={{
-                    height: 34,
-                    padding: '0 10px',
-                    border: '3px solid #222',
-                    borderRadius: 10,
-                    background: '#fff',
-                    color: '#B42318',
-                    fontFamily: "'Fredoka One', sans-serif",
-                    fontSize: 12,
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {workingAction === `delete:${card.id}` ? 'Deleting…' : 'Delete'}
-                </button>
+      {/* Game card */}
+      <Card style={{
+        padding: '48px 32px', marginBottom: 16, minHeight: 240,
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+        transition: `background 0.4s ease, border-color 0.4s ease`,
+        background: urgent ? '#FFF8F5' : S.surface, borderColor: urgent ? '#F0CEC2' : S.line,
+      }} className="a3">
+        {!sess ? <WaitingDots />
+          : sess.phase === 'lobby' ? (
+            <div className="aScale">
+              <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: S.muted, marginBottom: 16 }}>
+                {players.length < 2 ? 'Waiting for player 2' : 'Both players ready'}
               </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-    </div>
+              {players.length < 2 ? <WaitingDots />
+                : state?.me?.isHost
+                ? <Btn variant="primary" size="lg" onClick={async () => { try { await startRound({ code, playerToken: token }) } catch (e) { setFeedback(em(e)) } }}>Start round</Btn>
+                : <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontStyle: 'italic', fontSize: 20, color: S.muted }}>Waiting for host...</div>}
+            </div>
+          ) : sess.phase === 'round' ? (
+            <div className="aScale" key={sess.phase}>
+              {isMyTurn ? (
+                <>
+                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: urgent ? S.accent : S.muted, marginBottom: 20, transition: 'color 0.4s ease' }}>
+                    Mouth this — no sound
+                  </div>
+                  <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 'clamp(36px,7vw,72px)', lineHeight: 1.1, color: urgent ? S.accent : S.ink, transition: 'color 0.4s ease', marginBottom: 32 }}>
+                    {state?.activeCardText ?? ''}
+                  </div>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <Btn variant="primary" size="lg" onClick={async () => { try { await markCardResult({ code, playerToken: token, result: 'correct' }) } catch (e) { setFeedback(em(e)) } }}>Correct</Btn>
+                    <Btn variant="ghost" size="lg" onClick={async () => { try { await markCardResult({ code, playerToken: token, result: 'skip' }) } catch (e) { setFeedback(em(e)) } }}>Skip</Btn>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: S.muted, marginBottom: 20 }}>
+                    Watch & lip read
+                  </div>
+                  <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontStyle: 'italic', fontSize: 28, color: S.muted }}>
+                    Your partner is mouthing a word...
+                  </div>
+                  <div style={{ marginTop: 24 }}><WaitingDots /></div>
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="aScale" key="done">
+              <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: S.muted, marginBottom: 12 }}>Round complete</div>
+              <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 36, marginBottom: 8 }}>
+                {[...players].sort((a, b) => b.score - a.score)[0]?.name ?? '?'} is leading
+              </div>
+              {state?.me?.isHost && (
+                <Btn variant="secondary" size="lg" onClick={async () => { try { await startRound({ code, playerToken: token }) } catch (e) { setFeedback(em(e)) } }} style={{ marginTop: 8 }}>Next round</Btn>
+              )}
+            </div>
+          )}
+      </Card>
+
+      {feedback && <ErrorNote msg={feedback} />}
+    </Shell>
   )
 }
